@@ -21,7 +21,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Commandes:\n")
 		fmt.Fprintf(os.Stderr, "  create <nom> [--owner <owner>]  Créer un workspace\n")
 		fmt.Fprintf(os.Stderr, "  ls [--owner <owner>]             Lister les workspaces\n")
-		fmt.Fprintf(os.Stderr, "  rm <id>                          Supprimer un workspace\n")
+		fmt.Fprintf(os.Stderr, "  rm <id> [--keep-data]            Supprimer un workspace\n")
 		fmt.Fprintf(os.Stderr, "  get <id>                         Afficher un workspace\n")
 		fmt.Fprintf(os.Stderr, "  golden build                     Construire le golden snapshot\n")
 		fmt.Fprintf(os.Stderr, "  golden get                       Afficher le golden actif\n")
@@ -118,10 +118,17 @@ func cmdList(ctx context.Context, c *http.Client, args []string) error {
 }
 
 func cmdRM(ctx context.Context, c *http.Client, args []string) error {
-	if len(args) == 0 {
+	fs := flag.NewFlagSet("rm", flag.ExitOnError)
+	keepData := fs.Bool("keep-data", false, "garder workspace.ext4 après suppression")
+	fs.Parse(args)
+	if fs.NArg() == 0 {
 		return fmt.Errorf("id requis")
 	}
-	return call(ctx, c, "DELETE", "/v1/workspaces/"+args[0], "", nil)
+	path := "/v1/workspaces/" + fs.Arg(0)
+	if *keepData {
+		path += "?keep_data=1"
+	}
+	return call(ctx, c, "DELETE", path, "", nil)
 }
 
 func cmdGet(ctx context.Context, c *http.Client, args []string) error {

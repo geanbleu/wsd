@@ -986,6 +986,7 @@ func (h *Handler) getWorkspace(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) deleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	keepData := r.URL.Query().Get("keep_data") == "1"
 	log := h.Log.With("ws_id", id)
 
 	ws, err := h.Store.GetWorkspace(id)
@@ -1001,7 +1002,7 @@ func (h *Handler) deleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	h.Store.Transition(id, ws.State, store.StateDeleting)
 
 	go func() {
-		if err := h.destroyWorkspace(id, ws); err != nil {
+		if err := h.destroyWorkspace(id, ws, keepData); err != nil {
 			log.Error("destroy workspace", "err", err)
 		}
 	}()
@@ -1009,7 +1010,7 @@ func (h *Handler) deleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (h *Handler) destroyWorkspace(wsID string, ws *store.Workspace) error {
+func (h *Handler) destroyWorkspace(wsID string, ws *store.Workspace, keepData bool) error {
 	cfg := h.Cfg
 	id8 := store.ID8(wsID)
 	log := h.Log.With("ws_id", wsID)
@@ -1032,9 +1033,11 @@ func (h *Handler) destroyWorkspace(wsID string, ws *store.Workspace) error {
 		log.Warn("netns teardown", "err", err)
 	}
 
-	// 4. Supprimer le disque workspace (sauf si --keep_data)
-	wsDir := cfg.WorkspaceDir(wsID)
-	os.RemoveAll(wsDir)
+	// 4. Supprimer le répertoire workspace sauf si keep_data=1
+	if !keepData {
+		wsDir := cfg.WorkspaceDir(wsID)
+		os.RemoveAll(wsDir)
+	}
 
 	// 5. Libérer l'IP
 	h.Store.ReleaseIP(wsID)
