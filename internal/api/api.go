@@ -4,6 +4,7 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -43,6 +44,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/workspaces", h.listWorkspaces)
 	mux.HandleFunc("GET /v1/workspaces/{id}", h.getWorkspace)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", h.deleteWorkspace)
+	mux.HandleFunc("POST /v1/workspaces/{id}/ensure", h.ensureWorkspace)
+	mux.HandleFunc("POST /v1/workspaces/{id}/activity", h.updateActivity)
+	mux.HandleFunc("POST /v1/workspaces/{id}/token", h.createToken)
+	mux.HandleFunc("POST /v1/tokens/{token}", h.consumeToken)
 	mux.HandleFunc("POST /v1/golden", h.handleBuildGolden)
 	mux.HandleFunc("GET /v1/golden", h.handleGetGolden)
 	mux.HandleFunc("GET /v1/health", h.health)
@@ -161,20 +166,20 @@ func (h *Handler) bootWorkspace(ctx context.Context, wsID string, alloc *store.I
 		return fmt.Errorf("netns setup: %w", err)
 	}
 
-	// 2. Disque workspace
+	// 2. Répertoire workspace + chemin disque
 	wsDir := cfg.WorkspaceDir(wsID)
 	if err := os.MkdirAll(wsDir, 0o755); err != nil {
 		return err
 	}
 	wsDisk := filepath.Join(wsDir, "workspace.ext4")
-	if err := disk.CreateWorkspaceDisk(wsDisk, cfg.VM.WorkspaceDiskGiB); err != nil {
-		return fmt.Errorf("disque workspace: %w", err)
-	}
-
 	nsName := netns.NSName(id8)
 
 	if golden != nil {
 		return h.bootFromGolden(ctx, wsID, id8, nsName, wsDisk, alloc, golden)
+	}
+	// Cold boot : créer le disque workspace vierge
+	if err := disk.CreateWorkspaceDisk(wsDisk, cfg.VM.WorkspaceDiskGiB); err != nil {
+		return fmt.Errorf("disque workspace: %w", err)
 	}
 	return h.coldBoot(ctx, wsID, id8, nsName, wsDisk, alloc)
 }
@@ -261,6 +266,18 @@ func (h *Handler) bootFromGolden(ctx context.Context, wsID, id8, nsName, wsDisk 
 	imgDir := cfg.ImageDir(cfg.ImageID)
 	uid, gid := cfg.UIDForBlock(alloc.BlockIdx)
 
+	// Créer le disque workspace depuis le template golden (reflink) ou de zéro
+	template := filepath.Join(golden.Dir, "workspace-template.ext4")
+	if _, err := os.Stat(template); err == nil {
+		if err := disk.Reflink(template, wsDisk); err != nil {
+			return fmt.Errorf("reflink workspace template: %w", err)
+		}
+	} else {
+		if err := disk.CreateWorkspaceDisk(wsDisk, cfg.VM.WorkspaceDiskGiB); err != nil {
+			return fmt.Errorf("disque workspace: %w", err)
+		}
+	}
+
 	res, err := fc.Launch(ctx, fc.LaunchParams{
 		WorkspaceID:    wsID,
 		JailerBin:      cfg.JailerBin,
@@ -314,6 +331,72 @@ func (h *Handler) bootFromGolden(ctx context.Context, wsID, id8, nsName, wsDisk 
 	}
 
 	return h.Store.Transition(wsID, store.StateCreating, store.StateRunning)
+}
+
+// ── ensure / activity / token ─────────────────────────────────────────────────
+
+func (h *Handler) ensureWorkspace(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		ws, err := h.Store.GetWorkspace(id)
+		if err != nil {
+			writeErr(w, http.StatusNotFound, "workspace introuvable")
+			return
+		}
+		if ws.State == store.StateRunning {
+			alloc, err := h.Store.GetIPAllocation(id)
+			if err != nil {
+				writeErr(w, http.StatusInternalServerError, "allocation IP introuvable")
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"upstream": alloc.NSIP + ":8080"})
+			return
+		}
+		if ws.State == store.StateCreating || ws.State == store.StateResuming {
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+		writeErr(w, http.StatusServiceUnavailable, "workspace non disponible: "+ws.State)
+		return
+	}
+	writeErr(w, http.StatusGatewayTimeout, "timeout attente workspace running")
+}
+
+func (h *Handler) updateActivity(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := h.Store.SetLastActivity(id, time.Now()); err != nil {
+		writeErr(w, http.StatusNotFound, "workspace introuvable")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) createToken(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if _, err := h.Store.GetWorkspace(id); err != nil {
+		writeErr(w, http.StatusNotFound, "workspace introuvable")
+		return
+	}
+	b := make([]byte, 16)
+	rand.Read(b)
+	token := hex.EncodeToString(b)
+	if err := h.Store.CreateToken(token, id); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	url := "http://" + id + ".ws." + h.Cfg.Domain + "/?tkn=" + token
+	writeJSON(w, http.StatusCreated, map[string]string{"token": token, "url": url})
+}
+
+func (h *Handler) consumeToken(w http.ResponseWriter, r *http.Request) {
+	token := r.PathValue("token")
+	wsID, err := h.Store.ConsumeToken(token)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"workspace_id": wsID})
 }
 
 // ── golden ────────────────────────────────────────────────────────────────────
@@ -524,6 +607,10 @@ func (h *Handler) buildGolden(ctx context.Context) error {
 	); err != nil {
 		os.RemoveAll(goldenDir)
 		return fmt.Errorf("reflink rootfs golden: %w", err)
+	}
+	// Sauvegarder le disque workspace formaté comme template pour les futurs clones
+	if err := disk.Reflink(tmpDisk, filepath.Join(goldenDir, "workspace-template.ext4")); err != nil {
+		log.Warn("reflink workspace-template ignoré", "err", err)
 	}
 
 	// 9. Enregistrer en base

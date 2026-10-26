@@ -259,6 +259,37 @@ func (s *Store) ReleaseIP(wsID string) error {
 	return err
 }
 
+// ── tokens ────────────────────────────────────────────────────────────────────
+
+// CreateToken stores a single-use access token for a workspace.
+func (s *Store) CreateToken(token, wsID string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO tokens (token, workspace_id, created_at) VALUES (?,?,?)`,
+		token, wsID, time.Now().Unix())
+	return err
+}
+
+// ConsumeToken validates and atomically deletes a token, returning its workspace_id.
+func (s *Store) ConsumeToken(token string) (string, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+
+	var wsID string
+	if err := tx.QueryRow(`SELECT workspace_id FROM tokens WHERE token=?`, token).Scan(&wsID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", fmt.Errorf("token invalide ou expiré")
+		}
+		return "", err
+	}
+	if _, err := tx.Exec(`DELETE FROM tokens WHERE token=?`, token); err != nil {
+		return "", err
+	}
+	return wsID, tx.Commit()
+}
+
 // ── golden ───────────────────────────────────────────────────────────────────
 
 // Golden represents a saved Firecracker snapshot used as a boot baseline.

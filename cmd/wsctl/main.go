@@ -25,6 +25,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  get <id>                         Afficher un workspace\n")
 		fmt.Fprintf(os.Stderr, "  golden build                     Construire le golden snapshot\n")
 		fmt.Fprintf(os.Stderr, "  golden get                       Afficher le golden actif\n")
+		fmt.Fprintf(os.Stderr, "  token <id>                       Générer un lien d'accès à usage unique\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -51,6 +52,8 @@ func main() {
 		err = cmdGet(ctx, client, args[1:])
 	case "golden":
 		err = cmdGolden(ctx, client, args[1:])
+	case "token":
+		err = cmdToken(ctx, client, args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "commande inconnue: %s\n", args[0])
 		os.Exit(1)
@@ -121,6 +124,22 @@ func cmdGet(ctx context.Context, c *http.Client, args []string) error {
 		return err
 	}
 	printJSON(result)
+	return nil
+}
+
+func cmdToken(ctx context.Context, c *http.Client, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("id requis")
+	}
+	var result map[string]any
+	if err := call(ctx, c, "POST", "/v1/workspaces/"+args[0]+"/token", "", &result); err != nil {
+		return err
+	}
+	if url, ok := result["url"].(string); ok {
+		fmt.Println(url)
+	} else {
+		printJSON(result)
+	}
 	return nil
 }
 
