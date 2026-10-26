@@ -1,0 +1,13 @@
+[Unit]
+Description=wsd guest agent
+After=local-fs.target
+
+[Service]
+ExecStart=/usr/local/bin/wsagent
+Restart=on-failure
+RestartSec=1s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

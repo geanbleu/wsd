@@ -1,0 +1,19 @@
+[Unit]
+Description=code-server (VS Code web)
+# Démarré explicitement par wsagent après le montage de /workspace
+ConditionPathIsMountPoint=/workspace
+After=wsagent.service
+
+[Service]
+User=coder
+Group=coder
+ExecStart=code-server \
+    --bind-addr 0.0.0.0:8080 \
+    --auth none \
+    --disable-telemetry \
+    /workspace
+WorkingDirectory=/workspace
+Restart=on-failure
+RestartSec=2s
+StandardOutput=journal
+StandardError=journal

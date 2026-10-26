@@ -1,0 +1,16 @@
+[Unit]
+Description=opencode agent
+# Démarré explicitement par wsagent après le montage de /workspace
+ConditionPathIsMountPoint=/workspace
+After=wsagent.service
+
+[Service]
+User=coder
+Group=coder
+ExecStart=opencode serve
+WorkingDirectory=/workspace
+Environment=HOME=/home/coder
+Restart=on-failure
+RestartSec=2s
+StandardOutput=journal
+StandardError=journal
