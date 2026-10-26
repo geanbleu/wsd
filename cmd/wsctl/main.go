@@ -23,6 +23,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  ls [--owner <owner>]             Lister les workspaces\n")
 		fmt.Fprintf(os.Stderr, "  rm <id>                          Supprimer un workspace\n")
 		fmt.Fprintf(os.Stderr, "  get <id>                         Afficher un workspace\n")
+		fmt.Fprintf(os.Stderr, "  golden build                     Construire le golden snapshot\n")
+		fmt.Fprintf(os.Stderr, "  golden get                       Afficher le golden actif\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -47,6 +49,8 @@ func main() {
 		err = cmdRM(ctx, client, args[1:])
 	case "get":
 		err = cmdGet(ctx, client, args[1:])
+	case "golden":
+		err = cmdGolden(ctx, client, args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "commande inconnue: %s\n", args[0])
 		os.Exit(1)
@@ -118,6 +122,30 @@ func cmdGet(ctx context.Context, c *http.Client, args []string) error {
 	}
 	printJSON(result)
 	return nil
+}
+
+func cmdGolden(ctx context.Context, c *http.Client, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("sous-commande requise: build | get")
+	}
+	switch args[0] {
+	case "build":
+		var result map[string]any
+		if err := call(ctx, c, "POST", "/v1/golden", "", &result); err != nil {
+			return err
+		}
+		printJSON(result)
+		return nil
+	case "get":
+		var result map[string]any
+		if err := call(ctx, c, "GET", "/v1/golden", "", &result); err != nil {
+			return err
+		}
+		printJSON(result)
+		return nil
+	default:
+		return fmt.Errorf("sous-commande inconnue: %s (build | get)", args[0])
+	}
 }
 
 // ── HTTP client sur unix socket ───────────────────────────────────────────────

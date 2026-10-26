@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS ip_allocations (
 CREATE TABLE IF NOT EXISTS goldens (
     id         TEXT PRIMARY KEY,
     image_id   TEXT NOT NULL,
+    dir        TEXT NOT NULL DEFAULT '',
     is_active  INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
 );

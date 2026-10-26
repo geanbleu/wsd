@@ -25,6 +25,9 @@ type LaunchParams struct {
 	KernelSrc    string // /var/lib/wsd/images/<img>/vmlinux
 	RootfsSrc    string // /var/lib/wsd/images/<img>/rootfs.ext4   (or golden)
 	WorkspaceSrc string // /var/lib/wsd/workspaces/<ws-id>/workspace.ext4
+	// Snapshot restore (Phase 3). Leave empty for cold boot.
+	VMStateSrc string // golden dir/vmstate — hardlinked as /vmstate in chroot
+	MemSrc     string // golden dir/mem     — hardlinked as /mem in chroot
 }
 
 // LaunchResult holds the running VM handle.
@@ -59,6 +62,16 @@ func Launch(ctx context.Context, p LaunchParams) (*LaunchResult, error) {
 	}
 	if err := disk.Hardlink(p.WorkspaceSrc, filepath.Join(chroot, "workspace.ext4")); err != nil {
 		return nil, fmt.Errorf("hardlink workspace: %w", err)
+	}
+	if p.VMStateSrc != "" {
+		if err := disk.Hardlink(p.VMStateSrc, filepath.Join(chroot, "vmstate")); err != nil {
+			return nil, fmt.Errorf("hardlink vmstate: %w", err)
+		}
+	}
+	if p.MemSrc != "" {
+		if err := disk.Hardlink(p.MemSrc, filepath.Join(chroot, "mem")); err != nil {
+			return nil, fmt.Errorf("hardlink mem: %w", err)
+		}
 	}
 
 	// ── lancer jailer ─────────────────────────────────────────────────────────

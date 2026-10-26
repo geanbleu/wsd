@@ -126,3 +126,8 @@ func (cfg *Config) ImageDir(imageID string) string {
 func (cfg *Config) WorkspaceDir(wsID string) string {
 	return cfg.DataDir + "/workspaces/" + wsID
 }
+
+// GoldenDir returns the directory for a golden snapshot.
+func (cfg *Config) GoldenDir(goldenID string) string {
+	return cfg.DataDir + "/goldens/" + goldenID
+}

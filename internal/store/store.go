@@ -261,17 +261,53 @@ func (s *Store) ReleaseIP(wsID string) error {
 
 // ── golden ───────────────────────────────────────────────────────────────────
 
+// Golden represents a saved Firecracker snapshot used as a boot baseline.
+type Golden struct {
+	ID      string
+	ImageID string
+	Dir     string // directory containing vmstate, mem, rootfs.ext4
+}
+
 // ActiveGolden returns the current active golden, or nil if none.
-func (s *Store) ActiveGolden() (*struct{ ID, ImageID string }, error) {
-	row := s.db.QueryRow(`SELECT id,image_id FROM goldens WHERE is_active=1 LIMIT 1`)
-	var id, imgID string
-	if err := row.Scan(&id, &imgID); err != nil {
+func (s *Store) ActiveGolden() (*Golden, error) {
+	row := s.db.QueryRow(`SELECT id,image_id,dir FROM goldens WHERE is_active=1 LIMIT 1`)
+	var g Golden
+	if err := row.Scan(&g.ID, &g.ImageID, &g.Dir); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	return &struct{ ID, ImageID string }{id, imgID}, nil
+	return &g, nil
+}
+
+// CreateGolden records a new (inactive) golden snapshot.
+func (s *Store) CreateGolden(id, imageID, dir string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO goldens (id,image_id,dir,is_active,created_at) VALUES (?,?,?,0,?)`,
+		id, imageID, dir, time.Now().Unix())
+	return err
+}
+
+// SetActiveGolden atomically marks id as the active golden (deactivates all others).
+func (s *Store) SetActiveGolden(id string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE goldens SET is_active=0`); err != nil {
+		return err
+	}
+	res, err := tx.Exec(`UPDATE goldens SET is_active=1 WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("golden %s introuvable", id)
+	}
+	return tx.Commit()
 }
 
 // ── reconciliation ────────────────────────────────────────────────────────────

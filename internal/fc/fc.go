@@ -191,3 +191,17 @@ func (c *Client) CreateSnapshot(ctx context.Context, p SnapshotCreateParams) err
 func (c *Client) LoadSnapshot(ctx context.Context, p SnapshotLoadParams) error {
 	return c.do(ctx, http.MethodPut, "/snapshot/load", p)
 }
+
+// PatchDriveParams is the body for PATCH /drives/{id} (used after snapshot restore).
+type PatchDriveParams struct {
+	DriveID    string `json:"drive_id"`
+	PathOnHost string `json:"path_on_host"`
+}
+
+// PatchDrive updates the backing file of a paused drive (snapshot restore path).
+func (c *Client) PatchDrive(ctx context.Context, driveID, pathOnHost string) error {
+	return c.do(ctx, http.MethodPatch, "/drives/"+driveID, PatchDriveParams{
+		DriveID:    driveID,
+		PathOnHost: pathOnHost,
+	})
+}

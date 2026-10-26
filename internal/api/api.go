@@ -3,12 +3,15 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"wsd/internal/agentproto"
@@ -40,6 +43,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/workspaces", h.listWorkspaces)
 	mux.HandleFunc("GET /v1/workspaces/{id}", h.getWorkspace)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", h.deleteWorkspace)
+	mux.HandleFunc("POST /v1/golden", h.handleBuildGolden)
+	mux.HandleFunc("GET /v1/golden", h.handleGetGolden)
 	mux.HandleFunc("GET /v1/health", h.health)
 }
 
@@ -140,7 +145,11 @@ func (h *Handler) createWorkspace(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) bootWorkspace(ctx context.Context, wsID string, alloc *store.IPAllocation) error {
 	cfg := h.Cfg
 	id8 := store.ID8(wsID)
-	log := h.Log.With("ws_id", wsID)
+
+	golden, err := h.Store.ActiveGolden()
+	if err != nil {
+		return fmt.Errorf("golden lookup: %w", err)
+	}
 
 	// 1. Réseau
 	egressRules := make([]netns.EgressRule, len(cfg.Egress.Allow))
@@ -162,15 +171,26 @@ func (h *Handler) bootWorkspace(ctx context.Context, wsID string, alloc *store.I
 		return fmt.Errorf("disque workspace: %w", err)
 	}
 
-	// 3. Chroot + jailer
+	nsName := netns.NSName(id8)
+
+	if golden != nil {
+		return h.bootFromGolden(ctx, wsID, id8, nsName, wsDisk, alloc, golden)
+	}
+	return h.coldBoot(ctx, wsID, id8, nsName, wsDisk, alloc)
+}
+
+func (h *Handler) coldBoot(ctx context.Context, wsID, id8, nsName, wsDisk string, alloc *store.IPAllocation) error {
+	cfg := h.Cfg
+	log := h.Log.With("ws_id", wsID)
 	imgDir := cfg.ImageDir(cfg.ImageID)
 	uid, gid := cfg.UIDForBlock(alloc.BlockIdx)
+
 	res, err := fc.Launch(ctx, fc.LaunchParams{
 		WorkspaceID:    wsID,
 		JailerBin:      cfg.JailerBin,
 		FirecrackerBin: cfg.FirecrackerBin,
 		JailerDir:      cfg.JailerDir,
-		NetnsPath:      "/var/run/netns/" + netns.NSName(id8),
+		NetnsPath:      "/var/run/netns/" + nsName,
 		UID:            uid, GID: gid,
 		MemMiB:       cfg.VM.MemMiB,
 		KernelSrc:    filepath.Join(imgDir, "vmlinux"),
@@ -180,11 +200,9 @@ func (h *Handler) bootWorkspace(ctx context.Context, wsID string, alloc *store.I
 	if err != nil {
 		return fmt.Errorf("jailer launch: %w", err)
 	}
-
 	h.Store.SetPID(wsID, res.PID)
 
-	// 4. Configurer et démarrer la VM
-	bootArgs := "console=ttyS0 reboot=k panic=1 pci=off nomodule ro"
+	bootArgs := "console=ttyS0 reboot=k panic=1 pci=off nomodule rw"
 	fcc := res.Client
 	if err := fcc.PutMachineConfig(ctx, fc.MachineConfig{
 		VcpuCount: cfg.VM.VCPUs, MemSizeMiB: cfg.VM.MemMiB,
@@ -224,45 +242,304 @@ func (h *Handler) bootWorkspace(ctx context.Context, wsID string, alloc *store.I
 	}
 	log.Info("VM démarrée, attente wsagent...")
 
-	// 5. Attendre wsagent
 	if err := waitAgent(ctx, res.VsockPath); err != nil {
 		return fmt.Errorf("wsagent: %w", err)
+	}
+	if err := callPostRestore(ctx, res.VsockPath, wsID, false); err != nil {
+		return fmt.Errorf("post_restore: %w", err)
+	}
+	if err := waitCodeServer(ctx, nsName, alloc.NSIP); err != nil {
+		return fmt.Errorf("code-server: %w", err)
 	}
 
 	return h.Store.Transition(wsID, store.StateCreating, store.StateRunning)
 }
 
-func waitAgent(ctx context.Context, vsockPath string) error {
-	tryPing := func() error {
-		conn, err := agentproto.Dial(vsockPath)
+func (h *Handler) bootFromGolden(ctx context.Context, wsID, id8, nsName, wsDisk string, alloc *store.IPAllocation, golden *store.Golden) error {
+	cfg := h.Cfg
+	log := h.Log.With("ws_id", wsID)
+	imgDir := cfg.ImageDir(cfg.ImageID)
+	uid, gid := cfg.UIDForBlock(alloc.BlockIdx)
+
+	res, err := fc.Launch(ctx, fc.LaunchParams{
+		WorkspaceID:    wsID,
+		JailerBin:      cfg.JailerBin,
+		FirecrackerBin: cfg.FirecrackerBin,
+		JailerDir:      cfg.JailerDir,
+		NetnsPath:      "/var/run/netns/" + nsName,
+		UID:            uid, GID: gid,
+		MemMiB:       cfg.VM.MemMiB,
+		KernelSrc:    filepath.Join(imgDir, "vmlinux"),
+		RootfsSrc:    filepath.Join(golden.Dir, "rootfs.ext4"),
+		WorkspaceSrc: wsDisk,
+		VMStateSrc:   filepath.Join(golden.Dir, "vmstate"),
+		MemSrc:       filepath.Join(golden.Dir, "mem"),
+	})
+	if err != nil {
+		return fmt.Errorf("jailer launch: %w", err)
+	}
+	h.Store.SetPID(wsID, res.PID)
+
+	fcc := res.Client
+	if err := fcc.LoadSnapshot(ctx, fc.SnapshotLoadParams{
+		SnapshotPath: "/vmstate",
+		MemBackend: fc.MemoryBackend{
+			BackendType: "File",
+			BackendPath: "/mem",
+		},
+		ResumeVM: false,
+	}); err != nil {
+		return fmt.Errorf("LoadSnapshot: %w", err)
+	}
+
+	// Rediriger le disque workspace vers le disque frais de cet espace de travail
+	if err := fcc.PatchDrive(ctx, "workspace", "/workspace.ext4"); err != nil {
+		return fmt.Errorf("PatchDrive workspace: %w", err)
+	}
+
+	if err := fcc.Resume(ctx); err != nil {
+		return fmt.Errorf("Resume: %w", err)
+	}
+	log.Info("VM restaurée depuis golden, attente wsagent...")
+
+	if err := waitAgent(ctx, res.VsockPath); err != nil {
+		return fmt.Errorf("wsagent: %w", err)
+	}
+	// mount_workspace=true : wsagent démonte le /workspace du golden et monte le disque frais
+	if err := callPostRestore(ctx, res.VsockPath, wsID, true); err != nil {
+		return fmt.Errorf("post_restore: %w", err)
+	}
+	if err := waitCodeServer(ctx, nsName, alloc.NSIP); err != nil {
+		return fmt.Errorf("code-server: %w", err)
+	}
+
+	return h.Store.Transition(wsID, store.StateCreating, store.StateRunning)
+}
+
+// ── golden ────────────────────────────────────────────────────────────────────
+
+func (h *Handler) handleBuildGolden(w http.ResponseWriter, r *http.Request) {
+	log := h.Log.With("op", "build_golden")
+	log.Info("construction golden démarrée")
+	if err := h.buildGolden(r.Context()); err != nil {
+		log.Error("build golden", "err", err)
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	golden, err := h.Store.ActiveGolden()
+	if err != nil || golden == nil {
+		writeErr(w, http.StatusInternalServerError, "golden introuvable après création")
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]string{
+		"id": golden.ID, "image_id": golden.ImageID, "dir": golden.Dir,
+	})
+}
+
+func (h *Handler) handleGetGolden(w http.ResponseWriter, r *http.Request) {
+	golden, err := h.Store.ActiveGolden()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if golden == nil {
+		writeErr(w, http.StatusNotFound, "aucun golden actif")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"id": golden.ID, "image_id": golden.ImageID, "dir": golden.Dir,
+	})
+}
+
+func (h *Handler) buildGolden(ctx context.Context) error {
+	cfg := h.Cfg
+	log := h.Log.With("op", "build_golden")
+
+	tmpID := store.NewID()
+	id8 := store.ID8(tmpID)
+	imgDir := cfg.ImageDir(cfg.ImageID)
+
+	// 1. Allocation IP temporaire
+	alloc, err := h.Store.AllocateIP(tmpID, cfg.Net.Pool)
+	if err != nil {
+		return fmt.Errorf("allocation IP: %w", err)
+	}
+	defer h.Store.ReleaseIP(tmpID)
+
+	// 2. Réseau
+	egressRules := make([]netns.EgressRule, len(cfg.Egress.Allow))
+	for i, r := range cfg.Egress.Allow {
+		egressRules[i] = netns.EgressRule{CIDR: r.CIDR, Ports: r.Ports}
+	}
+	nsName := netns.NSName(id8)
+	if err := netns.Setup(id8, alloc.HostIP, alloc.NSIP,
+		cfg.Net.EgressIface, cfg.Net.DNS, egressRules); err != nil {
+		return fmt.Errorf("netns setup: %w", err)
+	}
+	defer netns.Teardown(id8, cfg.Net.EgressIface)
+
+	// 3. Disque workspace temporaire
+	tmpDir := cfg.WorkspaceDir(tmpID)
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+	tmpDisk := filepath.Join(tmpDir, "workspace.ext4")
+	if err := disk.CreateWorkspaceDisk(tmpDisk, cfg.VM.WorkspaceDiskGiB); err != nil {
+		return fmt.Errorf("disque workspace: %w", err)
+	}
+
+	// 4. Lancement VM (cold boot)
+	uid, gid := cfg.UIDForBlock(alloc.BlockIdx)
+	res, err := fc.Launch(ctx, fc.LaunchParams{
+		WorkspaceID:    tmpID,
+		JailerBin:      cfg.JailerBin,
+		FirecrackerBin: cfg.FirecrackerBin,
+		JailerDir:      cfg.JailerDir,
+		NetnsPath:      "/var/run/netns/" + nsName,
+		UID:            uid, GID: gid,
+		MemMiB:       cfg.VM.MemMiB,
+		KernelSrc:    filepath.Join(imgDir, "vmlinux"),
+		RootfsSrc:    filepath.Join(imgDir, "rootfs.ext4"),
+		WorkspaceSrc: tmpDisk,
+	})
+	if err != nil {
+		return fmt.Errorf("jailer launch: %w", err)
+	}
+	defer func() {
+		if p, err := os.FindProcess(res.PID); err == nil {
+			p.Kill()
+			p.Wait()
+		}
+		fc.DestroyChroot(cfg.JailerDir, tmpID)
+	}()
+
+	// 5. Démarrage VM
+	bootArgs := "console=ttyS0 reboot=k panic=1 pci=off nomodule rw"
+	fcc := res.Client
+	if err := fcc.PutMachineConfig(ctx, fc.MachineConfig{
+		VcpuCount: cfg.VM.VCPUs, MemSizeMiB: cfg.VM.MemMiB,
+	}); err != nil {
+		return err
+	}
+	if err := fcc.PutBootSource(ctx, fc.BootSource{
+		KernelImagePath: "/vmlinux", BootArgs: bootArgs,
+	}); err != nil {
+		return err
+	}
+	if err := fcc.PutDrive(ctx, fc.Drive{
+		DriveID: "rootfs", PathOnHost: "/rootfs.ext4",
+		IsRootDevice: true, IsReadOnly: false,
+	}); err != nil {
+		return err
+	}
+	if err := fcc.PutDrive(ctx, fc.Drive{
+		DriveID: "workspace", PathOnHost: "/workspace.ext4",
+		IsRootDevice: false, IsReadOnly: false,
+	}); err != nil {
+		return err
+	}
+	if err := fcc.PutNetworkInterface(ctx, fc.NetworkInterface{
+		IfaceID: "eth0", HostDevName: "tap0",
+		GuestMAC: "06:00:AC:10:00:02",
+	}); err != nil {
+		return err
+	}
+	if err := fcc.PutVsock(ctx, fc.Vsock{
+		GuestCID: 3, UDSPath: "/v.sock",
+	}); err != nil {
+		return err
+	}
+	if err := fcc.Start(ctx); err != nil {
+		return fmt.Errorf("InstanceStart: %w", err)
+	}
+	log.Info("VM golden démarrée, attente wsagent...")
+
+	if err := waitAgent(ctx, res.VsockPath); err != nil {
+		return fmt.Errorf("wsagent: %w", err)
+	}
+	if err := callPostRestore(ctx, res.VsockPath, tmpID, false); err != nil {
+		return fmt.Errorf("post_restore golden: %w", err)
+	}
+	if err := waitCodeServer(ctx, nsName, alloc.NSIP); err != nil {
+		return fmt.Errorf("code-server golden: %w", err)
+	}
+	log.Info("code-server golden prêt, préparation snapshot...")
+
+	// 6. Préparer le snapshot
+	if err := func() error {
+		conn, err := agentproto.Dial(res.VsockPath)
 		if err != nil {
 			return err
 		}
 		defer conn.Close()
-		resp, err := conn.Ping()
+		resp, err := conn.PrepareSnapshot()
 		if err != nil {
 			return err
 		}
 		if !resp.OK {
-			return fmt.Errorf("ping réponse not OK")
+			return fmt.Errorf("prepare_snapshot: %s", resp.Error)
 		}
 		return nil
+	}(); err != nil {
+		return fmt.Errorf("prepare_snapshot: %w", err)
 	}
 
-	deadline := time.Now().Add(60 * time.Second)
-	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		if err := tryPing(); err == nil {
-			return nil
-		}
-		time.Sleep(200 * time.Millisecond)
+	// 7. Pauser la VM et capturer le snapshot
+	if err := fcc.Pause(ctx); err != nil {
+		return fmt.Errorf("Pause: %w", err)
 	}
-	return fmt.Errorf("agent non disponible après 60 s")
+	if err := fcc.CreateSnapshot(ctx, fc.SnapshotCreateParams{
+		SnapshotPath: "/run/vmstate",
+		MemFilePath:  "/run/mem",
+		SnapshotType: "Full",
+	}); err != nil {
+		return fmt.Errorf("CreateSnapshot: %w", err)
+	}
+
+	// 8. Déplacer les fichiers vers le répertoire golden
+	goldenID := store.NewID()
+	goldenDir := cfg.GoldenDir(goldenID)
+	if err := os.MkdirAll(goldenDir, 0o755); err != nil {
+		return err
+	}
+	chroot := res.ChromeRoot
+	if err := os.Rename(
+		filepath.Join(chroot, "run", "vmstate"),
+		filepath.Join(goldenDir, "vmstate"),
+	); err != nil {
+		os.RemoveAll(goldenDir)
+		return fmt.Errorf("déplacement vmstate: %w", err)
+	}
+	if err := os.Rename(
+		filepath.Join(chroot, "run", "mem"),
+		filepath.Join(goldenDir, "mem"),
+	); err != nil {
+		os.RemoveAll(goldenDir)
+		return fmt.Errorf("déplacement mem: %w", err)
+	}
+	if err := disk.Reflink(
+		filepath.Join(chroot, "rootfs.ext4"),
+		filepath.Join(goldenDir, "rootfs.ext4"),
+	); err != nil {
+		os.RemoveAll(goldenDir)
+		return fmt.Errorf("reflink rootfs golden: %w", err)
+	}
+
+	// 9. Enregistrer en base
+	if err := h.Store.CreateGolden(goldenID, cfg.ImageID, goldenDir); err != nil {
+		os.RemoveAll(goldenDir)
+		return fmt.Errorf("CreateGolden: %w", err)
+	}
+	if err := h.Store.SetActiveGolden(goldenID); err != nil {
+		return fmt.Errorf("SetActiveGolden: %w", err)
+	}
+
+	log.Info("golden créé", "golden_id", goldenID, "dir", goldenDir)
+	return nil
 }
+
+// ── workspace teardown ────────────────────────────────────────────────────────
 
 func (h *Handler) listWorkspaces(w http.ResponseWriter, r *http.Request) {
 	owner := r.URL.Query().Get("owner")
@@ -349,6 +626,86 @@ func (h *Handler) destroyWorkspace(wsID string, ws *store.Workspace) error {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+func waitAgent(ctx context.Context, vsockPath string) error {
+	tryPing := func() error {
+		conn, err := agentproto.Dial(vsockPath)
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		resp, err := conn.Ping()
+		if err != nil {
+			return err
+		}
+		if !resp.OK {
+			return fmt.Errorf("ping réponse not OK")
+		}
+		return nil
+	}
+
+	deadline := time.Now().Add(60 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if err := tryPing(); err == nil {
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return fmt.Errorf("agent non disponible après 60 s")
+}
+
+func callPostRestore(ctx context.Context, vsockPath, wsID string, mountWorkspace bool) error {
+	conn, err := agentproto.Dial(vsockPath)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	rnd := make([]byte, 32)
+	rand.Read(rnd)
+
+	resp, err := conn.PostRestore(agentproto.PostRestoreReq{
+		TimeUnixNano:   time.Now().UnixNano(),
+		RandomBytes:    rnd,
+		MachineID:      strings.ReplaceAll(wsID, "-", ""),
+		Hostname:       "ws-" + store.ID8(wsID),
+		MountWorkspace: mountWorkspace,
+		RestartUnits:   []string{"code-server.service"},
+	})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("post_restore: %s", resp.Error)
+	}
+	return nil
+}
+
+func waitCodeServer(ctx context.Context, nsName, nsIP string) error {
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		out, _ := exec.CommandContext(ctx, "ip", "netns", "exec", nsName,
+			"curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+			"--max-time", "2",
+			fmt.Sprintf("http://%s:8080/", nsIP)).Output()
+		code := strings.TrimSpace(string(out))
+		if code == "200" || code == "302" {
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("code-server non disponible après 30 s")
+}
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
