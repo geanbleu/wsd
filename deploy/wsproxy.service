@@ -1,0 +1,23 @@
+[Unit]
+Description=wsproxy — reverse proxy HTTP/WebSocket pour les workspaces
+After=network.target wsd.service
+Requires=wsd.service
+Documentation=file:/usr/share/doc/wsd/README
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/wsproxy -config /etc/wsd/wsproxy.json
+Restart=on-failure
+RestartSec=5
+
+# wsproxy tourne en utilisateur dédié du groupe wsd (accès au socket Unix).
+User=wsproxy
+Group=wsd
+
+StandardError=journal
+SyslogIdentifier=wsproxy
+
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

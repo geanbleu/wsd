@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"text/template"
@@ -43,11 +44,22 @@ type resumeCall struct {
 // Handler implements all /v1/* routes.
 type Handler struct {
 	Deps
-	resumeIn sync.Map // map[ws_id]*resumeCall — coalesces concurrent resume requests
+	resumeIn  sync.Map // map[ws_id]*resumeCall — coalesces concurrent resume requests
+	latCreate  *latHist
+	latResume  *latHist
+	latSuspend *latHist
 }
 
 // New creates a Handler.
-func New(d Deps) *Handler { return &Handler{Deps: d} }
+func New(d Deps) *Handler {
+	buckets := []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60}
+	return &Handler{
+		Deps:       d,
+		latCreate:  newLatHist(buckets),
+		latResume:  newLatHist(buckets),
+		latSuspend: newLatHist(buckets),
+	}
+}
 
 // RegisterRoutes registers all API routes on mux (Go ≥ 1.22 method patterns).
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
@@ -64,6 +76,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/golden", h.handleBuildGolden)
 	mux.HandleFunc("GET /v1/golden", h.handleGetGolden)
 	mux.HandleFunc("GET /v1/health", h.health)
+	mux.HandleFunc("GET /v1/metrics", h.serveMetrics)
+	mux.HandleFunc("GET /v1/top", h.serveTop)
 }
 
 // ── request / response types ─────────────────────────────────────────────────
@@ -141,7 +155,14 @@ func (h *Handler) createWorkspace(w http.ResponseWriter, r *http.Request) {
 
 	// Lancement dans une goroutine, la requête HTTP bloque jusqu'à running.
 	result := make(chan error, 1)
-	go func() { result <- h.bootWorkspace(r.Context(), wsID, alloc) }()
+	bootStart := time.Now()
+	go func() {
+		err := h.bootWorkspace(r.Context(), wsID, alloc)
+		if err == nil {
+			h.latCreate.observe(time.Since(bootStart).Seconds())
+		}
+		result <- err
+	}()
 
 	select {
 	case err := <-result:
@@ -477,6 +498,7 @@ func (h *Handler) SuspendByID(wsID string) error {
 func (h *Handler) doSuspend(wsID string, ws *store.Workspace) error {
 	cfg := h.Cfg
 	log := h.Log.With("ws_id", wsID)
+	suspendStart := time.Now()
 	wsDir := cfg.WorkspaceDir(wsID)
 	chroot := filepath.Join(cfg.JailerDir, "firecracker", wsID, "root")
 	apiSock := filepath.Join(chroot, "run", "firecracker.sock")
@@ -543,6 +565,7 @@ func (h *Handler) doSuspend(wsID string, ws *store.Workspace) error {
 		log.Warn("destroy chroot suspend", "err", err)
 	}
 
+	h.latSuspend.observe(time.Since(suspendStart).Seconds())
 	log.Info("workspace suspendu")
 	return h.Store.Transition(wsID, store.StateSuspending, store.StateSuspended)
 }
@@ -578,6 +601,7 @@ func (h *Handler) doResume(wsID string) error {
 	cfg := h.Cfg
 	id8 := store.ID8(wsID)
 	log := h.Log.With("ws_id", wsID)
+	resumeStart := time.Now()
 
 	if err := h.Store.Transition(wsID, store.StateSuspended, store.StateResuming); err != nil {
 		return fmt.Errorf("transition: %w", err)
@@ -657,6 +681,7 @@ func (h *Handler) doResume(wsID string) error {
 		return fmt.Errorf("code-server: %w", err)
 	}
 
+	h.latResume.observe(time.Since(resumeStart).Seconds())
 	log.Info("workspace repris")
 	return h.Store.Transition(wsID, store.StateResuming, store.StateRunning)
 }
@@ -1155,4 +1180,145 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 
 func writeErr(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+// ── /v1/metrics ───────────────────────────────────────────────────────────────
+
+func (h *Handler) serveMetrics(w http.ResponseWriter, r *http.Request) {
+	workspaces, _ := h.Store.ListWorkspaces("")
+	counts := make(map[string]int)
+	var rssTotal int64
+	for _, ws := range workspaces {
+		counts[ws.State]++
+		if ws.PID > 0 {
+			rss, _ := readRSSKiB(ws.PID)
+			rssTotal += rss
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("# HELP wsd_workspaces_total Number of workspaces by state\n")
+	sb.WriteString("# TYPE wsd_workspaces_total gauge\n")
+	for _, state := range []string{
+		store.StateCreating, store.StateRunning, store.StateSuspending,
+		store.StateSuspended, store.StateResuming, store.StateError,
+	} {
+		fmt.Fprintf(&sb, "wsd_workspaces_total{state=%q} %d\n", state, counts[state])
+	}
+
+	sb.WriteString("# HELP wsd_firecracker_rss_kib Total RSS of firecracker processes in KiB\n")
+	sb.WriteString("# TYPE wsd_firecracker_rss_kib gauge\n")
+	fmt.Fprintf(&sb, "wsd_firecracker_rss_kib %d\n", rssTotal)
+
+	h.latCreate.prometheus("wsd_create_duration_seconds", &sb)
+	h.latResume.prometheus("wsd_resume_duration_seconds", &sb)
+	h.latSuspend.prometheus("wsd_suspend_duration_seconds", &sb)
+
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(sb.String()))
+}
+
+// ── /v1/top ──────────────────────────────────────────────────────────────────
+
+type topEntry struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	State        string `json:"state"`
+	PID          int    `json:"pid"`
+	RSSKiB       int64  `json:"rss_kib"`
+	PSSKiB       int64  `json:"pss_kib"`
+	LastActivity int64  `json:"last_activity"`
+}
+
+func (h *Handler) serveTop(w http.ResponseWriter, r *http.Request) {
+	workspaces, err := h.Store.ListWorkspaces("")
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]topEntry, 0, len(workspaces))
+	for _, ws := range workspaces {
+		e := topEntry{
+			ID:           ws.ID,
+			Name:         ws.Name,
+			State:        ws.State,
+			PID:          ws.PID,
+			LastActivity: ws.LastActivity.Unix(),
+		}
+		if ws.PID > 0 {
+			e.RSSKiB, _ = readRSSKiB(ws.PID)
+			e.PSSKiB, _ = readPSSKiB(ws.PID)
+		}
+		out = append(out, e)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// ── smaps_rollup helpers ──────────────────────────────────────────────────────
+
+func readSmapsField(pid int, field string) (int64, error) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/smaps_rollup", pid))
+	if err != nil {
+		return 0, err
+	}
+	prefix := field + ":"
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				v, err := strconv.ParseInt(fields[1], 10, 64)
+				return v, err
+			}
+		}
+	}
+	return 0, fmt.Errorf("champ %s introuvable", field)
+}
+
+func readRSSKiB(pid int) (int64, error)  { return readSmapsField(pid, "Rss") }
+func readPSSKiB(pid int) (int64, error)  { return readSmapsField(pid, "Pss") }
+
+// ── latency histogram ─────────────────────────────────────────────────────────
+
+type latHist struct {
+	mu      sync.Mutex
+	bounds  []float64
+	counts  []int64 // cumulative per bucket
+	inf     int64
+	sum     float64
+	n       int64
+}
+
+func newLatHist(bounds []float64) *latHist {
+	return &latHist{bounds: bounds, counts: make([]int64, len(bounds))}
+}
+
+func (h *latHist) observe(secs float64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.sum += secs
+	h.n++
+	for i, b := range h.bounds {
+		if secs <= b {
+			h.counts[i]++
+		}
+	}
+	if secs > h.bounds[len(h.bounds)-1] {
+		h.inf++
+	}
+}
+
+func (h *latHist) prometheus(name string, sb *strings.Builder) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	fmt.Fprintf(sb, "# HELP %s Operation latency in seconds\n", name)
+	fmt.Fprintf(sb, "# TYPE %s histogram\n", name)
+	var cum int64
+	for i, b := range h.bounds {
+		cum += h.counts[i]
+		fmt.Fprintf(sb, "%s_bucket{le=\"%g\"} %d\n", name, b, cum)
+	}
+	fmt.Fprintf(sb, "%s_bucket{le=\"+Inf\"} %d\n", name, cum+h.inf)
+	fmt.Fprintf(sb, "%s_sum %g\n", name, h.sum)
+	fmt.Fprintf(sb, "%s_count %d\n", name, h.n)
 }

@@ -1,0 +1,24 @@
+[Unit]
+Description=wsd — workspace daemon Firecracker
+After=network.target
+Documentation=file:/usr/share/doc/wsd/README
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/wsd -config /etc/wsd/wsd.json
+Restart=on-failure
+RestartSec=5
+
+# wsd a besoin de root pour créer les netns, les veth et les règles nftables.
+User=root
+Group=root
+
+# Journalisation structurée
+StandardError=journal
+SyslogIdentifier=wsd
+
+# Limites
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

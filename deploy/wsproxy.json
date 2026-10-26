@@ -1,0 +1,14 @@
+{
+  "domain": "ws.example.internal",
+  "listen": ":8080",
+  "wsd_socket": "/run/wsd/wsd.sock",
+  "hmac_secret": "REMPLACER_PAR_SECRET_ALEATOIRE_32_OCTETS",
+  "cookie_name": "wsd_auth",
+  "cookie_ttl": "24h",
+  "oidc": {
+    "issuer": "https://accounts.google.com",
+    "client_id": "REMPLACER_PAR_CLIENT_ID",
+    "client_secret": "REMPLACER_PAR_CLIENT_SECRET",
+    "external_scheme": "https"
+  }
+}

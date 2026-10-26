@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,17 +19,31 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	gooidc "github.com/coreos/go-oidc/v3/oidc"
+	"golang.org/x/oauth2"
 )
 
 // ── config ────────────────────────────────────────────────────────────────────
 
 type Config struct {
-	Domain     string `json:"domain"`
-	Listen     string `json:"listen"`
-	WsdSocket  string `json:"wsd_socket"`
-	HMACSecret string `json:"hmac_secret"`
-	CookieName string `json:"cookie_name"`
-	CookieTTL  string `json:"cookie_ttl"`
+	Domain     string     `json:"domain"`
+	Listen     string     `json:"listen"`
+	WsdSocket  string     `json:"wsd_socket"`
+	HMACSecret string     `json:"hmac_secret"`
+	CookieName string     `json:"cookie_name"`
+	CookieTTL  string     `json:"cookie_ttl"`
+	OIDC       OIDCConfig `json:"oidc"`
+}
+
+// OIDCConfig enables OIDC auth (optional). If Issuer is empty, token-only mode is used.
+type OIDCConfig struct {
+	Issuer       string `json:"issuer"`        // e.g. https://accounts.google.com
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+	// redirect_uri is https://<id>.ws.<domain>/_oidc/callback by default.
+	// Set ExternalScheme if wsproxy sits behind a TLS terminator (default "https").
+	ExternalScheme string `json:"external_scheme"`
 }
 
 func loadConfig(path string) (*Config, error) {
@@ -97,6 +112,14 @@ func main() {
 		},
 	}
 
+	if cfg.OIDC.Issuer != "" {
+		if err := h.initOIDC(context.Background()); err != nil {
+			log.Error("oidc init", "err", err)
+			os.Exit(1)
+		}
+		log.Info("OIDC activé", "issuer", cfg.OIDC.Issuer)
+	}
+
 	log.Info("wsproxy démarré", "listen", cfg.Listen, "domain", cfg.Domain)
 	if err := http.ListenAndServe(cfg.Listen, h); err != nil {
 		log.Error("serve", "err", err)
@@ -107,13 +130,15 @@ func main() {
 // ── ProxyHandler ──────────────────────────────────────────────────────────────
 
 type ProxyHandler struct {
-	cfg       *Config
-	log       *slog.Logger
-	secret    []byte
-	ttl       time.Duration
-	wsdClient *http.Client
-	actMu     sync.Mutex
-	actMap    map[string]time.Time // ws_id → last activity sent
+	cfg          *Config
+	log          *slog.Logger
+	secret       []byte
+	ttl          time.Duration
+	wsdClient    *http.Client
+	actMu        sync.Mutex
+	actMap       map[string]time.Time // ws_id → last activity sent
+	oidcProvider *gooidc.Provider
+	oauth2Cfg    oauth2.Config
 }
 
 func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -124,6 +149,12 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	log := h.log.With("ws_id", wsID)
 
+	// OIDC callback: /_oidc/callback?code=...&state=...
+	if r.URL.Path == "/_oidc/callback" && h.oidcProvider != nil {
+		h.handleOIDCCallback(w, r, wsID)
+		return
+	}
+
 	// Token exchange: ?tkn=<token>
 	if tkn := r.URL.Query().Get("tkn"); tkn != "" {
 		h.handleTokenExchange(w, r, wsID, tkn)
@@ -132,6 +163,10 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Auth cookie
 	if !h.validCookie(r, wsID) {
+		if h.oidcProvider != nil && acceptsHTML(r) {
+			h.handleOIDCLogin(w, r, wsID)
+			return
+		}
 		if acceptsHTML(r) {
 			http.Error(w, "Non autorisé. Utilisez wsctl token <id> pour obtenir un lien d'accès.", http.StatusForbidden)
 		} else {
@@ -307,6 +342,149 @@ func (h *ProxyHandler) sendWakePage(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusServiceUnavailable)
 	w.Write([]byte(wakeHTML))
+}
+
+// ── OIDC ──────────────────────────────────────────────────────────────────────
+
+func (h *ProxyHandler) initOIDC(ctx context.Context) error {
+	provider, err := gooidc.NewProvider(ctx, h.cfg.OIDC.Issuer)
+	if err != nil {
+		return fmt.Errorf("oidc provider: %w", err)
+	}
+	h.oidcProvider = provider
+	h.oauth2Cfg = oauth2.Config{
+		ClientID:     h.cfg.OIDC.ClientID,
+		ClientSecret: h.cfg.OIDC.ClientSecret,
+		Endpoint:     provider.Endpoint(),
+		Scopes:       []string{gooidc.ScopeOpenID, "email"},
+	}
+	return nil
+}
+
+func (h *ProxyHandler) oidcRedirectURI(wsID string) string {
+	scheme := h.cfg.OIDC.ExternalScheme
+	if scheme == "" {
+		scheme = "https"
+	}
+	return fmt.Sprintf("%s://%s.ws.%s/_oidc/callback", scheme, wsID, h.cfg.Domain)
+}
+
+// oidcState generates a short-lived HMAC-signed state token for CSRF protection.
+func (h *ProxyHandler) oidcState(wsID string) string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	nonce := hex.EncodeToString(b)
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	mac := hmac.New(sha256.New, h.secret)
+	fmt.Fprintf(mac, "oidcstate:%s:%s:%s", wsID, ts, nonce)
+	sig := hex.EncodeToString(mac.Sum(nil))[:16]
+	return wsID + ":" + ts + ":" + nonce + ":" + sig
+}
+
+// parseOIDCState verifies the state and returns the workspace ID.
+func (h *ProxyHandler) parseOIDCState(state string) (wsID string, ok bool) {
+	parts := strings.SplitN(state, ":", 4)
+	if len(parts) != 4 {
+		return "", false
+	}
+	wsID, ts, nonce, sig := parts[0], parts[1], parts[2], parts[3]
+	tsUnix, err := strconv.ParseInt(ts, 10, 64)
+	if err != nil || time.Now().Unix()-tsUnix > 600 {
+		return "", false
+	}
+	mac := hmac.New(sha256.New, h.secret)
+	fmt.Fprintf(mac, "oidcstate:%s:%s:%s", wsID, ts, nonce)
+	expected := hex.EncodeToString(mac.Sum(nil))[:16]
+	if !hmac.Equal([]byte(expected), []byte(sig)) {
+		return "", false
+	}
+	return wsID, true
+}
+
+func (h *ProxyHandler) handleOIDCLogin(w http.ResponseWriter, r *http.Request, wsID string) {
+	cfg := h.oauth2Cfg
+	cfg.RedirectURL = h.oidcRedirectURI(wsID)
+	state := h.oidcState(wsID)
+	http.Redirect(w, r, cfg.AuthCodeURL(state), http.StatusFound)
+}
+
+func (h *ProxyHandler) handleOIDCCallback(w http.ResponseWriter, r *http.Request, wsID string) {
+	// 1. Vérifier le state CSRF
+	wsFromState, ok := h.parseOIDCState(r.URL.Query().Get("state"))
+	if !ok || wsFromState != wsID {
+		http.Error(w, "état OIDC invalide", http.StatusBadRequest)
+		return
+	}
+
+	// 2. Échanger le code contre un token
+	cfg := h.oauth2Cfg
+	cfg.RedirectURL = h.oidcRedirectURI(wsID)
+	oauthToken, err := cfg.Exchange(r.Context(), r.URL.Query().Get("code"))
+	if err != nil {
+		http.Error(w, "échange OIDC échoué", http.StatusInternalServerError)
+		h.log.Warn("oidc exchange", "err", err)
+		return
+	}
+
+	// 3. Vérifier et décoder l'ID token
+	verifier := h.oidcProvider.Verifier(&gooidc.Config{ClientID: h.cfg.OIDC.ClientID})
+	rawIDToken, ok := oauthToken.Extra("id_token").(string)
+	if !ok {
+		http.Error(w, "id_token absent", http.StatusInternalServerError)
+		return
+	}
+	idToken, err := verifier.Verify(r.Context(), rawIDToken)
+	if err != nil {
+		http.Error(w, "id_token invalide", http.StatusForbidden)
+		return
+	}
+	var claims struct {
+		Email string `json:"email"`
+		Sub   string `json:"sub"`
+	}
+	if err := idToken.Claims(&claims); err != nil {
+		http.Error(w, "claims OIDC invalides", http.StatusInternalServerError)
+		return
+	}
+	userID := claims.Email
+	if userID == "" {
+		userID = claims.Sub
+	}
+
+	// 4. Vérifier que l'owner du workspace correspond
+	ws, err := h.getWorkspace(r.Context(), wsID)
+	if err != nil {
+		http.Error(w, "workspace introuvable", http.StatusNotFound)
+		return
+	}
+	if owner, _ := ws["owner"].(string); owner != "" && owner != userID {
+		h.log.Warn("oidc accès refusé", "ws_id", wsID, "owner", owner, "user", userID)
+		http.Error(w, "accès refusé : ce workspace appartient à "+owner, http.StatusForbidden)
+		return
+	}
+
+	// 5. Émettre le cookie HMAC et rediriger
+	h.setCookie(w, r, wsID)
+	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+func (h *ProxyHandler) getWorkspace(ctx context.Context, wsID string) (map[string]any, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"http://wsd/v1/workspaces/"+wsID, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := h.wsdClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	var result map[string]any
+	json.NewDecoder(resp.Body).Decode(&result)
+	return result, nil
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

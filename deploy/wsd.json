@@ -1,0 +1,31 @@
+{
+  "data_dir": "/var/lib/wsd",
+  "jailer_dir": "/srv/jailer",
+  "firecracker_bin": "/usr/local/bin/firecracker",
+  "jailer_bin": "/usr/local/bin/jailer",
+  "socket_path": "/run/wsd/wsd.sock",
+  "uid_range": [200000, 299999],
+  "image_id": "debian-bookworm-v1",
+  "vm": {
+    "vcpus": 2,
+    "mem_mib": 2048,
+    "workspace_disk_gib": 20
+  },
+  "net": {
+    "pool": "10.200.0.0/16",
+    "egress_iface": "eth0",
+    "dns": "1.1.1.1"
+  },
+  "egress": {
+    "allow": [
+      {"cidr": "0.0.0.0/0", "ports": [443]},
+      {"cidr": "0.0.0.0/0", "ports": [80]}
+    ]
+  },
+  "idle_timeout": "30m",
+  "opencode": {
+    "config_template": "/etc/wsd/opencode.json.tmpl",
+    "secrets_file": "/etc/wsd/secrets.json"
+  },
+  "domain": "ws.example.internal"
+}

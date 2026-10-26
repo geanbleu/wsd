@@ -28,6 +28,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  suspend <id>                     Suspendre un workspace\n")
 	fmt.Fprintf(os.Stderr, "  resume <id>                      Réveiller un workspace\n")
 	fmt.Fprintf(os.Stderr, "  token <id>                       Générer un lien d'accès à usage unique\n")
+	fmt.Fprintf(os.Stderr, "  top                              Afficher les VMs avec RSS et activité\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -56,6 +57,8 @@ func main() {
 		err = cmdSuspend(ctx, client, args[1:])
 	case "resume":
 		err = cmdResume(ctx, client, args[1:])
+	case "top":
+		err = cmdTop(ctx, client, args[1:])
 	case "golden":
 		err = cmdGolden(ctx, client, args[1:])
 	case "token":
@@ -171,6 +174,43 @@ func cmdResume(ctx context.Context, c *http.Client, args []string) error {
 	}
 	printJSON(result)
 	return nil
+}
+
+func cmdTop(ctx context.Context, c *http.Client, _ []string) error {
+	var result []map[string]any
+	if err := call(ctx, c, "GET", "/v1/top", "", &result); err != nil {
+		return err
+	}
+	if len(result) == 0 {
+		fmt.Println("aucun workspace")
+		return nil
+	}
+	fmt.Printf("%-36s  %-20s  %-12s  %8s  %8s  %s\n",
+		"ID", "NOM", "ÉTAT", "RSS(MiB)", "PSS(MiB)", "DERNIÈRE ACTIVITÉ")
+	for _, e := range result {
+		rss := int64Val(e, "rss_kib") / 1024
+		pss := int64Val(e, "pss_kib") / 1024
+		la := int64Val(e, "last_activity")
+		var ago string
+		if la > 0 {
+			ago = time.Since(time.Unix(la, 0)).Truncate(time.Second).String()
+		}
+		fmt.Printf("%-36s  %-20s  %-12s  %8d  %8d  il y a %s\n",
+			strVal(e, "id"), strVal(e, "name"), strVal(e, "state"), rss, pss, ago)
+	}
+	return nil
+}
+
+func int64Val(m map[string]any, key string) int64 {
+	if v, ok := m[key]; ok {
+		switch n := v.(type) {
+		case float64:
+			return int64(n)
+		case int64:
+			return n
+		}
+	}
+	return 0
 }
 
 func cmdGolden(ctx context.Context, c *http.Client, args []string) error {
