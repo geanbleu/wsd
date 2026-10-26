@@ -26,8 +26,9 @@ type LaunchParams struct {
 	RootfsSrc    string // /var/lib/wsd/images/<img>/rootfs.ext4   (or golden)
 	WorkspaceSrc string // /var/lib/wsd/workspaces/<ws-id>/workspace.ext4
 	// Snapshot restore (Phase 3). Leave empty for cold boot.
-	VMStateSrc string // golden dir/vmstate — hardlinked as /vmstate in chroot
-	MemSrc     string // golden dir/mem     — hardlinked as /mem in chroot
+	VMStateSrc     string // golden dir/vmstate — hardlinked as /vmstate in chroot
+	MemSrc         string // golden dir/mem     — hardlinked as /mem in chroot
+	HardlinkRootfs bool   // hardlink rootfs instead of reflink (resume from own rootfs)
 }
 
 // LaunchResult holds the running VM handle.
@@ -57,8 +58,14 @@ func Launch(ctx context.Context, p LaunchParams) (*LaunchResult, error) {
 	if err := disk.Hardlink(p.KernelSrc, filepath.Join(chroot, "vmlinux")); err != nil {
 		return nil, fmt.Errorf("hardlink vmlinux: %w", err)
 	}
-	if err := disk.Reflink(p.RootfsSrc, filepath.Join(chroot, "rootfs.ext4")); err != nil {
-		return nil, fmt.Errorf("reflink rootfs: %w", err)
+	if p.HardlinkRootfs {
+		if err := disk.Hardlink(p.RootfsSrc, filepath.Join(chroot, "rootfs.ext4")); err != nil {
+			return nil, fmt.Errorf("hardlink rootfs: %w", err)
+		}
+	} else {
+		if err := disk.Reflink(p.RootfsSrc, filepath.Join(chroot, "rootfs.ext4")); err != nil {
+			return nil, fmt.Errorf("reflink rootfs: %w", err)
+		}
 	}
 	if err := disk.Hardlink(p.WorkspaceSrc, filepath.Join(chroot, "workspace.ext4")); err != nil {
 		return nil, fmt.Errorf("hardlink workspace: %w", err)

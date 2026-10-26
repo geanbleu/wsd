@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"wsd/internal/agentproto"
@@ -30,9 +31,16 @@ type Deps struct {
 	Log   *slog.Logger
 }
 
+// resumeCall tracks an in-progress resume operation for coalescing.
+type resumeCall struct {
+	done chan struct{}
+	err  error
+}
+
 // Handler implements all /v1/* routes.
 type Handler struct {
 	Deps
+	resumeIn sync.Map // map[ws_id]*resumeCall — coalesces concurrent resume requests
 }
 
 // New creates a Handler.
@@ -44,6 +52,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/workspaces", h.listWorkspaces)
 	mux.HandleFunc("GET /v1/workspaces/{id}", h.getWorkspace)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", h.deleteWorkspace)
+	mux.HandleFunc("POST /v1/workspaces/{id}/suspend", h.suspendWorkspace)
+	mux.HandleFunc("POST /v1/workspaces/{id}/resume", h.resumeWorkspace)
 	mux.HandleFunc("POST /v1/workspaces/{id}/ensure", h.ensureWorkspace)
 	mux.HandleFunc("POST /v1/workspaces/{id}/activity", h.updateActivity)
 	mux.HandleFunc("POST /v1/workspaces/{id}/token", h.createToken)
@@ -250,7 +260,7 @@ func (h *Handler) coldBoot(ctx context.Context, wsID, id8, nsName, wsDisk string
 	if err := waitAgent(ctx, res.VsockPath); err != nil {
 		return fmt.Errorf("wsagent: %w", err)
 	}
-	if err := callPostRestore(ctx, res.VsockPath, wsID, false); err != nil {
+	if err := callPostRestore(ctx, res.VsockPath, wsID, false, []string{"code-server.service"}); err != nil {
 		return fmt.Errorf("post_restore: %w", err)
 	}
 	if err := waitCodeServer(ctx, nsName, alloc.NSIP); err != nil {
@@ -323,7 +333,7 @@ func (h *Handler) bootFromGolden(ctx context.Context, wsID, id8, nsName, wsDisk 
 		return fmt.Errorf("wsagent: %w", err)
 	}
 	// mount_workspace=true : wsagent démonte le /workspace du golden et monte le disque frais
-	if err := callPostRestore(ctx, res.VsockPath, wsID, true); err != nil {
+	if err := callPostRestore(ctx, res.VsockPath, wsID, true, []string{"code-server.service"}); err != nil {
 		return fmt.Errorf("post_restore: %w", err)
 	}
 	if err := waitCodeServer(ctx, nsName, alloc.NSIP); err != nil {
@@ -337,6 +347,22 @@ func (h *Handler) bootFromGolden(ctx context.Context, wsID, id8, nsName, wsDisk 
 
 func (h *Handler) ensureWorkspace(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+
+	ws, err := h.Store.GetWorkspace(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "workspace introuvable")
+		return
+	}
+
+	// Déclencher le resume si suspendu (coalesé : un seul resume par workspace)
+	if ws.State == store.StateSuspended {
+		if err := h.triggerResume(r.Context(), id); err != nil {
+			writeErr(w, http.StatusServiceUnavailable, "resume: "+err.Error())
+			return
+		}
+	}
+
+	// Attendre running (jusqu'à 30 s)
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		ws, err := h.Store.GetWorkspace(id)
@@ -361,6 +387,251 @@ func (h *Handler) ensureWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeErr(w, http.StatusGatewayTimeout, "timeout attente workspace running")
+}
+
+func (h *Handler) suspendWorkspace(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	log := h.Log.With("ws_id", id)
+
+	ws, err := h.Store.GetWorkspace(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "workspace introuvable")
+		return
+	}
+	if ws.State == store.StateSuspended {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if ws.State != store.StateRunning {
+		writeErr(w, http.StatusConflict, "workspace non running: "+ws.State)
+		return
+	}
+	if err := h.Store.Transition(id, store.StateRunning, store.StateSuspending); err != nil {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	go func() {
+		if err := h.doSuspend(id, ws); err != nil {
+			log.Error("suspend", "err", err)
+		}
+	}()
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func (h *Handler) resumeWorkspace(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	ws, err := h.Store.GetWorkspace(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "workspace introuvable")
+		return
+	}
+	if ws.State == store.StateRunning {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if ws.State != store.StateSuspended {
+		writeErr(w, http.StatusConflict, "workspace non suspendu: "+ws.State)
+		return
+	}
+	go func() {
+		if err := h.triggerResume(context.Background(), id); err != nil {
+			h.Log.Error("resume explicite", "ws_id", id, "err", err)
+		}
+	}()
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// SuspendByID is called by the idle reaper to suspend an inactive workspace.
+func (h *Handler) SuspendByID(wsID string) error {
+	ws, err := h.Store.GetWorkspace(wsID)
+	if err != nil || ws.State != store.StateRunning {
+		return err
+	}
+	if err := h.Store.Transition(wsID, store.StateRunning, store.StateSuspending); err != nil {
+		return err
+	}
+	return h.doSuspend(wsID, ws)
+}
+
+func (h *Handler) doSuspend(wsID string, ws *store.Workspace) error {
+	cfg := h.Cfg
+	log := h.Log.With("ws_id", wsID)
+	wsDir := cfg.WorkspaceDir(wsID)
+	chroot := filepath.Join(cfg.JailerDir, "firecracker", wsID, "root")
+	apiSock := filepath.Join(chroot, "run", "firecracker.sock")
+	vsockPath := filepath.Join(chroot, "v.sock")
+
+	// 1. Préparer le snapshot via l'agent
+	func() {
+		conn, err := agentproto.Dial(vsockPath)
+		if err != nil {
+			log.Warn("prepare_snapshot dial", "err", err)
+			return
+		}
+		defer conn.Close()
+		if resp, err := conn.PrepareSnapshot(); err != nil || !resp.OK {
+			log.Warn("prepare_snapshot", "err", err)
+		}
+	}()
+
+	fcc := fc.New(apiSock)
+	ctx := context.Background()
+
+	// 2. Pauser la VM
+	if err := fcc.Pause(ctx); err != nil {
+		h.Store.MarkError(wsID)
+		return fmt.Errorf("Pause: %w", err)
+	}
+
+	// 3. Snapshot vers chroot/run/
+	if err := fcc.CreateSnapshot(ctx, fc.SnapshotCreateParams{
+		SnapshotPath: "/run/vmstate",
+		MemFilePath:  "/run/mem",
+		SnapshotType: "Full",
+	}); err != nil {
+		h.Store.MarkError(wsID)
+		return fmt.Errorf("CreateSnapshot: %w", err)
+	}
+
+	// 4. Tuer firecracker
+	if ws.PID > 0 {
+		if p, err := os.FindProcess(ws.PID); err == nil {
+			p.Kill()
+			p.Wait()
+		}
+	}
+
+	// 5. Déplacer les fichiers hors du chroot
+	suspendDir := filepath.Join(wsDir, "suspend")
+	if err := os.MkdirAll(suspendDir, 0o755); err != nil {
+		h.Store.MarkError(wsID)
+		return err
+	}
+	for _, mv := range [][2]string{
+		{filepath.Join(chroot, "run", "vmstate"), filepath.Join(suspendDir, "vmstate")},
+		{filepath.Join(chroot, "run", "mem"), filepath.Join(suspendDir, "mem")},
+		{filepath.Join(chroot, "rootfs.ext4"), filepath.Join(wsDir, "rootfs.ext4")},
+	} {
+		if err := os.Rename(mv[0], mv[1]); err != nil {
+			log.Warn("déplacement suspend", "src", mv[0], "err", err)
+		}
+	}
+
+	// 6. Supprimer le chroot (rootfs déjà déplacé)
+	if err := fc.DestroyChroot(cfg.JailerDir, wsID); err != nil {
+		log.Warn("destroy chroot suspend", "err", err)
+	}
+
+	log.Info("workspace suspendu")
+	return h.Store.Transition(wsID, store.StateSuspending, store.StateSuspended)
+}
+
+func (h *Handler) triggerResume(ctx context.Context, wsID string) error {
+	call := &resumeCall{done: make(chan struct{})}
+	actual, loaded := h.resumeIn.LoadOrStore(wsID, call)
+	if loaded {
+		existing := actual.(*resumeCall)
+		select {
+		case <-existing.done:
+			return existing.err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	go func() {
+		defer func() {
+			h.resumeIn.Delete(wsID)
+			close(call.done)
+		}()
+		call.err = h.doResume(wsID)
+	}()
+	select {
+	case <-call.done:
+		return call.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (h *Handler) doResume(wsID string) error {
+	cfg := h.Cfg
+	id8 := store.ID8(wsID)
+	log := h.Log.With("ws_id", wsID)
+
+	if err := h.Store.Transition(wsID, store.StateSuspended, store.StateResuming); err != nil {
+		return fmt.Errorf("transition: %w", err)
+	}
+
+	alloc, err := h.Store.GetIPAllocation(wsID)
+	if err != nil {
+		h.Store.MarkError(wsID)
+		return fmt.Errorf("allocation IP: %w", err)
+	}
+
+	nsName := netns.NSName(id8)
+	imgDir := cfg.ImageDir(cfg.ImageID)
+	wsDir := cfg.WorkspaceDir(wsID)
+	uid, gid := cfg.UIDForBlock(alloc.BlockIdx)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	res, err := fc.Launch(ctx, fc.LaunchParams{
+		WorkspaceID:    wsID,
+		JailerBin:      cfg.JailerBin,
+		FirecrackerBin: cfg.FirecrackerBin,
+		JailerDir:      cfg.JailerDir,
+		NetnsPath:      "/var/run/netns/" + nsName,
+		UID:            uid, GID: gid,
+		MemMiB:         cfg.VM.MemMiB,
+		KernelSrc:      filepath.Join(imgDir, "vmlinux"),
+		RootfsSrc:      filepath.Join(wsDir, "rootfs.ext4"),
+		HardlinkRootfs: true,
+		WorkspaceSrc:   filepath.Join(wsDir, "workspace.ext4"),
+		VMStateSrc:     filepath.Join(wsDir, "suspend", "vmstate"),
+		MemSrc:         filepath.Join(wsDir, "suspend", "mem"),
+	})
+	if err != nil {
+		h.Store.MarkError(wsID)
+		return fmt.Errorf("jailer launch: %w", err)
+	}
+	h.Store.SetPID(wsID, res.PID)
+
+	fcc := res.Client
+	if err := fcc.LoadSnapshot(ctx, fc.SnapshotLoadParams{
+		SnapshotPath: "/vmstate",
+		MemBackend:   fc.MemoryBackend{BackendType: "File", BackendPath: "/mem"},
+		ResumeVM:     false,
+	}); err != nil {
+		h.Store.MarkError(wsID)
+		return fmt.Errorf("LoadSnapshot: %w", err)
+	}
+	if err := fcc.PatchDrive(ctx, "workspace", "/workspace.ext4"); err != nil {
+		h.Store.MarkError(wsID)
+		return fmt.Errorf("PatchDrive: %w", err)
+	}
+	if err := fcc.Resume(ctx); err != nil {
+		h.Store.MarkError(wsID)
+		return fmt.Errorf("Resume: %w", err)
+	}
+	log.Info("VM reprise, attente wsagent...")
+
+	if err := waitAgent(ctx, res.VsockPath); err != nil {
+		h.Store.MarkError(wsID)
+		return fmt.Errorf("wsagent: %w", err)
+	}
+	// Horloge + RNG uniquement ; /workspace reste monté, services déjà actifs
+	if err := callPostRestore(ctx, res.VsockPath, wsID, false, nil); err != nil {
+		log.Warn("post_restore resume", "err", err)
+	}
+	if err := waitCodeServer(ctx, nsName, alloc.NSIP); err != nil {
+		h.Store.MarkError(wsID)
+		return fmt.Errorf("code-server: %w", err)
+	}
+
+	log.Info("workspace repris")
+	return h.Store.Transition(wsID, store.StateResuming, store.StateRunning)
 }
 
 func (h *Handler) updateActivity(w http.ResponseWriter, r *http.Request) {
@@ -541,7 +812,7 @@ func (h *Handler) buildGolden(ctx context.Context) error {
 	if err := waitAgent(ctx, res.VsockPath); err != nil {
 		return fmt.Errorf("wsagent: %w", err)
 	}
-	if err := callPostRestore(ctx, res.VsockPath, tmpID, false); err != nil {
+	if err := callPostRestore(ctx, res.VsockPath, tmpID, false, []string{"code-server.service"}); err != nil {
 		return fmt.Errorf("post_restore golden: %w", err)
 	}
 	if err := waitCodeServer(ctx, nsName, alloc.NSIP); err != nil {
@@ -746,7 +1017,7 @@ func waitAgent(ctx context.Context, vsockPath string) error {
 	return fmt.Errorf("agent non disponible après 60 s")
 }
 
-func callPostRestore(ctx context.Context, vsockPath, wsID string, mountWorkspace bool) error {
+func callPostRestore(ctx context.Context, vsockPath, wsID string, mountWorkspace bool, units []string) error {
 	conn, err := agentproto.Dial(vsockPath)
 	if err != nil {
 		return err
@@ -762,7 +1033,7 @@ func callPostRestore(ctx context.Context, vsockPath, wsID string, mountWorkspace
 		MachineID:      strings.ReplaceAll(wsID, "-", ""),
 		Hostname:       "ws-" + store.ID8(wsID),
 		MountWorkspace: mountWorkspace,
-		RestartUnits:   []string{"code-server.service"},
+		RestartUnits:   units,
 	})
 	if err != nil {
 		return err

@@ -57,7 +57,7 @@ func main() {
 	srv := &http.Server{Handler: mux}
 	log.Info("wsd démarré", "socket", sockPath)
 
-	go idleReaper(log, st, cfg)
+	go idleReaper(log, st, h, cfg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -99,12 +99,23 @@ func pidAlive(pid int) bool {
 	return p.Signal(syscall.Signal(0)) == nil
 }
 
-func idleReaper(log *slog.Logger, st *store.Store, cfg interface{ IdleTimeoutDuration() time.Duration }) {
+func idleReaper(log *slog.Logger, st *store.Store, h interface{ SuspendByID(string) error }, cfg interface{ IdleTimeoutDuration() time.Duration }) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for range ticker.C {
-		// Phase 5 : suspendre les workspaces inactifs depuis > idle_timeout
-		_ = log
-		_ = st
+		workspaces, err := st.ActiveWorkspaces()
+		if err != nil {
+			log.Warn("idleReaper: liste workspaces", "err", err)
+			continue
+		}
+		cutoff := time.Now().Add(-cfg.IdleTimeoutDuration())
+		for _, w := range workspaces {
+			if w.State == store.StateRunning && w.LastActivity.Before(cutoff) {
+				log.Info("suspendre workspace inactif", "ws_id", w.ID, "last_activity", w.LastActivity)
+				if err := h.SuspendByID(w.ID); err != nil {
+					log.Warn("suspension échouée", "ws_id", w.ID, "err", err)
+				}
+			}
+		}
 	}
 }

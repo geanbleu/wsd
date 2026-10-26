@@ -25,7 +25,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  get <id>                         Afficher un workspace\n")
 		fmt.Fprintf(os.Stderr, "  golden build                     Construire le golden snapshot\n")
 		fmt.Fprintf(os.Stderr, "  golden get                       Afficher le golden actif\n")
-		fmt.Fprintf(os.Stderr, "  token <id>                       Générer un lien d'accès à usage unique\n")
+		fmt.Fprintf(os.Stderr, "  suspend <id>                     Suspendre un workspace\n")
+	fmt.Fprintf(os.Stderr, "  resume <id>                      Réveiller un workspace\n")
+	fmt.Fprintf(os.Stderr, "  token <id>                       Générer un lien d'accès à usage unique\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -50,6 +52,10 @@ func main() {
 		err = cmdRM(ctx, client, args[1:])
 	case "get":
 		err = cmdGet(ctx, client, args[1:])
+	case "suspend":
+		err = cmdSuspend(ctx, client, args[1:])
+	case "resume":
+		err = cmdResume(ctx, client, args[1:])
 	case "golden":
 		err = cmdGolden(ctx, client, args[1:])
 	case "token":
@@ -140,6 +146,30 @@ func cmdToken(ctx context.Context, c *http.Client, args []string) error {
 	} else {
 		printJSON(result)
 	}
+	return nil
+}
+
+func cmdSuspend(ctx context.Context, c *http.Client, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("id requis")
+	}
+	var result map[string]any
+	if err := call(ctx, c, "POST", "/v1/workspaces/"+args[0]+"/suspend", "", &result); err != nil {
+		return err
+	}
+	printJSON(result)
+	return nil
+}
+
+func cmdResume(ctx context.Context, c *http.Client, args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("id requis")
+	}
+	var result map[string]any
+	if err := call(ctx, c, "POST", "/v1/workspaces/"+args[0]+"/resume", "", &result); err != nil {
+		return err
+	}
+	printJSON(result)
 	return nil
 }
 
