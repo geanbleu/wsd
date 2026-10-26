@@ -2,8 +2,10 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -14,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 
 	"wsd/internal/agentproto"
@@ -200,6 +203,11 @@ func (h *Handler) coldBoot(ctx context.Context, wsID, id8, nsName, wsDisk string
 	imgDir := cfg.ImageDir(cfg.ImageID)
 	uid, gid := cfg.UIDForBlock(alloc.BlockIdx)
 
+	ocFiles, err := h.opencodeFiles()
+	if err != nil {
+		return err
+	}
+
 	res, err := fc.Launch(ctx, fc.LaunchParams{
 		WorkspaceID:    wsID,
 		JailerBin:      cfg.JailerBin,
@@ -208,6 +216,7 @@ func (h *Handler) coldBoot(ctx context.Context, wsID, id8, nsName, wsDisk string
 		NetnsPath:      "/var/run/netns/" + nsName,
 		UID:            uid, GID: gid,
 		MemMiB:       cfg.VM.MemMiB,
+		CPUMax:       cfg.VM.CPUMax,
 		KernelSrc:    filepath.Join(imgDir, "vmlinux"),
 		RootfsSrc:    filepath.Join(imgDir, "rootfs.ext4"),
 		WorkspaceSrc: wsDisk,
@@ -252,6 +261,11 @@ func (h *Handler) coldBoot(ctx context.Context, wsID, id8, nsName, wsDisk string
 	}); err != nil {
 		return err
 	}
+	if err := fcc.PutBalloon(ctx, fc.Balloon{
+		AmountMiB: 0, DeflateOnOOM: true, StatsPollingIntervalS: 1,
+	}); err != nil {
+		log.Warn("balloon non supporté, ignoré", "err", err)
+	}
 	if err := fcc.Start(ctx); err != nil {
 		return fmt.Errorf("InstanceStart: %w", err)
 	}
@@ -260,7 +274,7 @@ func (h *Handler) coldBoot(ctx context.Context, wsID, id8, nsName, wsDisk string
 	if err := waitAgent(ctx, res.VsockPath); err != nil {
 		return fmt.Errorf("wsagent: %w", err)
 	}
-	if err := callPostRestore(ctx, res.VsockPath, wsID, false, []string{"code-server.service"}); err != nil {
+	if err := callPostRestore(ctx, res.VsockPath, wsID, false, []string{"code-server.service"}, ocFiles); err != nil {
 		return fmt.Errorf("post_restore: %w", err)
 	}
 	if err := waitCodeServer(ctx, nsName, alloc.NSIP); err != nil {
@@ -276,10 +290,15 @@ func (h *Handler) bootFromGolden(ctx context.Context, wsID, id8, nsName, wsDisk 
 	imgDir := cfg.ImageDir(cfg.ImageID)
 	uid, gid := cfg.UIDForBlock(alloc.BlockIdx)
 
+	ocFiles, err := h.opencodeFiles()
+	if err != nil {
+		return err
+	}
+
 	// Créer le disque workspace depuis le template golden (reflink) ou de zéro
-	template := filepath.Join(golden.Dir, "workspace-template.ext4")
-	if _, err := os.Stat(template); err == nil {
-		if err := disk.Reflink(template, wsDisk); err != nil {
+	wsTemplate := filepath.Join(golden.Dir, "workspace-template.ext4")
+	if _, err := os.Stat(wsTemplate); err == nil {
+		if err := disk.Reflink(wsTemplate, wsDisk); err != nil {
 			return fmt.Errorf("reflink workspace template: %w", err)
 		}
 	} else {
@@ -296,6 +315,7 @@ func (h *Handler) bootFromGolden(ctx context.Context, wsID, id8, nsName, wsDisk 
 		NetnsPath:      "/var/run/netns/" + nsName,
 		UID:            uid, GID: gid,
 		MemMiB:       cfg.VM.MemMiB,
+		CPUMax:       cfg.VM.CPUMax,
 		KernelSrc:    filepath.Join(imgDir, "vmlinux"),
 		RootfsSrc:    filepath.Join(golden.Dir, "rootfs.ext4"),
 		WorkspaceSrc: wsDisk,
@@ -333,7 +353,7 @@ func (h *Handler) bootFromGolden(ctx context.Context, wsID, id8, nsName, wsDisk 
 		return fmt.Errorf("wsagent: %w", err)
 	}
 	// mount_workspace=true : wsagent démonte le /workspace du golden et monte le disque frais
-	if err := callPostRestore(ctx, res.VsockPath, wsID, true, []string{"code-server.service"}); err != nil {
+	if err := callPostRestore(ctx, res.VsockPath, wsID, true, []string{"code-server.service"}, ocFiles); err != nil {
 		return fmt.Errorf("post_restore: %w", err)
 	}
 	if err := waitCodeServer(ctx, nsName, alloc.NSIP); err != nil {
@@ -577,6 +597,12 @@ func (h *Handler) doResume(wsID string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
+	ocFiles, err := h.opencodeFiles()
+	if err != nil {
+		h.Store.MarkError(wsID)
+		return err
+	}
+
 	res, err := fc.Launch(ctx, fc.LaunchParams{
 		WorkspaceID:    wsID,
 		JailerBin:      cfg.JailerBin,
@@ -585,6 +611,7 @@ func (h *Handler) doResume(wsID string) error {
 		NetnsPath:      "/var/run/netns/" + nsName,
 		UID:            uid, GID: gid,
 		MemMiB:         cfg.VM.MemMiB,
+		CPUMax:         cfg.VM.CPUMax,
 		KernelSrc:      filepath.Join(imgDir, "vmlinux"),
 		RootfsSrc:      filepath.Join(wsDir, "rootfs.ext4"),
 		HardlinkRootfs: true,
@@ -621,8 +648,8 @@ func (h *Handler) doResume(wsID string) error {
 		h.Store.MarkError(wsID)
 		return fmt.Errorf("wsagent: %w", err)
 	}
-	// Horloge + RNG uniquement ; /workspace reste monté, services déjà actifs
-	if err := callPostRestore(ctx, res.VsockPath, wsID, false, nil); err != nil {
+	// Horloge + RNG + config opencode ; /workspace reste monté, services déjà actifs
+	if err := callPostRestore(ctx, res.VsockPath, wsID, false, nil, ocFiles); err != nil {
 		log.Warn("post_restore resume", "err", err)
 	}
 	if err := waitCodeServer(ctx, nsName, alloc.NSIP); err != nil {
@@ -753,6 +780,7 @@ func (h *Handler) buildGolden(ctx context.Context) error {
 		NetnsPath:      "/var/run/netns/" + nsName,
 		UID:            uid, GID: gid,
 		MemMiB:       cfg.VM.MemMiB,
+		CPUMax:       cfg.VM.CPUMax,
 		KernelSrc:    filepath.Join(imgDir, "vmlinux"),
 		RootfsSrc:    filepath.Join(imgDir, "rootfs.ext4"),
 		WorkspaceSrc: tmpDisk,
@@ -804,6 +832,11 @@ func (h *Handler) buildGolden(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
+	if err := fcc.PutBalloon(ctx, fc.Balloon{
+		AmountMiB: 0, DeflateOnOOM: true, StatsPollingIntervalS: 1,
+	}); err != nil {
+		log.Warn("balloon non supporté, ignoré", "err", err)
+	}
 	if err := fcc.Start(ctx); err != nil {
 		return fmt.Errorf("InstanceStart: %w", err)
 	}
@@ -812,7 +845,8 @@ func (h *Handler) buildGolden(ctx context.Context) error {
 	if err := waitAgent(ctx, res.VsockPath); err != nil {
 		return fmt.Errorf("wsagent: %w", err)
 	}
-	if err := callPostRestore(ctx, res.VsockPath, tmpID, false, []string{"code-server.service"}); err != nil {
+	// Pas de config opencode dans le golden : aucun secret dans les snapshots (SPEC §12)
+	if err := callPostRestore(ctx, res.VsockPath, tmpID, false, []string{"code-server.service"}, nil); err != nil {
 		return fmt.Errorf("post_restore golden: %w", err)
 	}
 	if err := waitCodeServer(ctx, nsName, alloc.NSIP); err != nil {
@@ -1017,7 +1051,54 @@ func waitAgent(ctx context.Context, vsockPath string) error {
 	return fmt.Errorf("agent non disponible après 60 s")
 }
 
-func callPostRestore(ctx context.Context, vsockPath, wsID string, mountWorkspace bool, units []string) error {
+// opencodeFiles renders the opencode config template (if configured) and returns a FileSpec
+// ready to be pushed via post_restore. Returns nil if opencode is not configured.
+func (h *Handler) opencodeFiles() ([]agentproto.FileSpec, error) {
+	cfg := h.Cfg
+	if cfg.Opencode.ConfigTemplate == "" {
+		return nil, nil
+	}
+	content, err := renderOpencodeConfig(cfg.Opencode.ConfigTemplate, cfg.Opencode.SecretsFile)
+	if err != nil {
+		return nil, fmt.Errorf("opencode config: %w", err)
+	}
+	return []agentproto.FileSpec{{
+		Path:       "/home/coder/.config/opencode/opencode.json",
+		Mode:       0600,
+		Owner:      "coder",
+		ContentB64: base64.StdEncoding.EncodeToString(content),
+	}}, nil
+}
+
+// renderOpencodeConfig reads a Go text/template from tmplPath, executes it with the
+// JSON secrets from secretsPath as template data, and returns the rendered bytes.
+func renderOpencodeConfig(tmplPath, secretsPath string) ([]byte, error) {
+	tmplData, err := os.ReadFile(tmplPath)
+	if err != nil {
+		return nil, fmt.Errorf("template: %w", err)
+	}
+	t, err := template.New("opencode").Parse(string(tmplData))
+	if err != nil {
+		return nil, fmt.Errorf("template parse: %w", err)
+	}
+	var data map[string]any
+	if secretsPath != "" {
+		secretsData, err := os.ReadFile(secretsPath)
+		if err != nil {
+			return nil, fmt.Errorf("secrets: %w", err)
+		}
+		if err := json.Unmarshal(secretsData, &data); err != nil {
+			return nil, fmt.Errorf("secrets parse: %w", err)
+		}
+	}
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, data); err != nil {
+		return nil, fmt.Errorf("template execute: %w", err)
+	}
+	return buf.Bytes(), nil
+}
+
+func callPostRestore(ctx context.Context, vsockPath, wsID string, mountWorkspace bool, units []string, files []agentproto.FileSpec) error {
 	conn, err := agentproto.Dial(vsockPath)
 	if err != nil {
 		return err
@@ -1032,6 +1113,7 @@ func callPostRestore(ctx context.Context, vsockPath, wsID string, mountWorkspace
 		RandomBytes:    rnd,
 		MachineID:      strings.ReplaceAll(wsID, "-", ""),
 		Hostname:       "ws-" + store.ID8(wsID),
+		Files:          files,
 		MountWorkspace: mountWorkspace,
 		RestartUnits:   units,
 	})

@@ -96,12 +96,45 @@ type SnapshotLoadParams struct {
 
 // Balloon corresponds to Balloon in the swagger.
 type Balloon struct {
-	AmountMiB            int  `json:"amount_mib"`
-	DeflateOnOOM         bool `json:"deflate_on_oom"`
+	AmountMiB             int  `json:"amount_mib"`
+	DeflateOnOOM          bool `json:"deflate_on_oom"`
 	StatsPollingIntervalS int  `json:"stats_polling_interval_s,omitempty"`
 }
 
+// BalloonStats corresponds to BalloonStatistics in the swagger (GET /balloon/statistics).
+type BalloonStats struct {
+	TargetPages      int   `json:"target_pages,omitempty"`
+	ActualPages      int   `json:"actual_pages,omitempty"`
+	TargetMiB        int   `json:"target_mib,omitempty"`
+	ActualMiB        int   `json:"actual_mib,omitempty"`
+	FreeMemory       int64 `json:"free_memory,omitempty"`
+	AvailableMemory  int64 `json:"available_memory,omitempty"`
+	TotalMemory      int64 `json:"total_memory,omitempty"`
+	SwapIn           int64 `json:"swap_in,omitempty"`
+	SwapOut          int64 `json:"swap_out,omitempty"`
+	MajorFaults      int64 `json:"major_faults,omitempty"`
+	MinorFaults      int64 `json:"minor_faults,omitempty"`
+	DiskCaches       int64 `json:"disk_caches,omitempty"`
+}
+
 // ── low-level helpers ─────────────────────────────────────────────────────────
+
+func (c *Client) getJSON(ctx context.Context, path string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost"+path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("fc GET %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("fc GET %s: HTTP %d: %s", path, resp.StatusCode, b)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
 
 func (c *Client) do(ctx context.Context, method, path string, body any) error {
 	var r io.Reader
@@ -161,6 +194,15 @@ func (c *Client) PutVsock(ctx context.Context, v Vsock) error {
 // PutBalloon configures the balloon device.
 func (c *Client) PutBalloon(ctx context.Context, b Balloon) error {
 	return c.do(ctx, http.MethodPut, "/balloon", b)
+}
+
+// GetBalloonStats returns balloon statistics (requires stats_polling_interval_s > 0).
+func (c *Client) GetBalloonStats(ctx context.Context) (*BalloonStats, error) {
+	var s BalloonStats
+	if err := c.getJSON(ctx, "/balloon/statistics", &s); err != nil {
+		return nil, err
+	}
+	return &s, nil
 }
 
 // Start sends the InstanceStart action to boot the VM.

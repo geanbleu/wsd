@@ -29,6 +29,8 @@ type LaunchParams struct {
 	VMStateSrc     string // golden dir/vmstate — hardlinked as /vmstate in chroot
 	MemSrc         string // golden dir/mem     — hardlinked as /mem in chroot
 	HardlinkRootfs bool   // hardlink rootfs instead of reflink (resume from own rootfs)
+	// cgroup cpu.max value (Phase 6), e.g. "200000 100000". Empty = no cpu.max cgroup.
+	CPUMax string
 }
 
 // LaunchResult holds the running VM handle.
@@ -84,7 +86,7 @@ func Launch(ctx context.Context, p LaunchParams) (*LaunchResult, error) {
 	// ── lancer jailer ─────────────────────────────────────────────────────────
 	// --cgroup-version 2 est obligatoire (défaut jailer = 1)
 	memMax := strconv.Itoa((p.MemMiB + 256) * 1024 * 1024)
-	cmd := exec.CommandContext(ctx, p.JailerBin,
+	jailerArgs := []string{
 		"--id", p.WorkspaceID,
 		"--exec-file", p.FirecrackerBin,
 		"--uid", strconv.Itoa(p.UID),
@@ -92,12 +94,17 @@ func Launch(ctx context.Context, p LaunchParams) (*LaunchResult, error) {
 		"--chroot-base-dir", p.JailerDir,
 		"--netns", p.NetnsPath,
 		"--cgroup-version", "2",
-		"--cgroup", "memory.max="+memMax,
-		"--",
+		"--cgroup", "memory.max=" + memMax,
+	}
+	if p.CPUMax != "" {
+		jailerArgs = append(jailerArgs, "--cgroup", "cpu.max="+p.CPUMax)
+	}
+	jailerArgs = append(jailerArgs, "--",
 		"--api-sock", apiSockInChroot,
 		"--log-path", "/run/firecracker.log",
 		"--level", "Info",
 	)
+	cmd := exec.CommandContext(ctx, p.JailerBin, jailerArgs...)
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("jailer start: %w", err)

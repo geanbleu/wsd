@@ -10,25 +10,33 @@ import (
 
 // Config is the wsd daemon configuration, decoded from wsd.json.
 type Config struct {
-	DataDir        string    `json:"data_dir"`
-	JailerDir      string    `json:"jailer_dir"`
-	FirecrackerBin string    `json:"firecracker_bin"`
-	JailerBin      string    `json:"jailer_bin"`
-	UIDRange       [2]int    `json:"uid_range"`
-	VM             VMConfig  `json:"vm"`
-	Net            NetConfig `json:"net"`
-	Egress         EgressCfg `json:"egress"`
-	IdleTimeout    string    `json:"idle_timeout"`
-	Domain         string    `json:"domain"`
-	ImageID        string    `json:"image_id"`
-	SocketPath     string    `json:"socket_path"`
+	DataDir        string         `json:"data_dir"`
+	JailerDir      string         `json:"jailer_dir"`
+	FirecrackerBin string         `json:"firecracker_bin"`
+	JailerBin      string         `json:"jailer_bin"`
+	UIDRange       [2]int         `json:"uid_range"`
+	VM             VMConfig       `json:"vm"`
+	Net            NetConfig      `json:"net"`
+	Egress         EgressCfg      `json:"egress"`
+	IdleTimeout    string         `json:"idle_timeout"`
+	Domain         string         `json:"domain"`
+	ImageID        string         `json:"image_id"`
+	SocketPath     string         `json:"socket_path"`
+	Opencode       OpencodeConfig `json:"opencode"`
+}
+
+// OpencodeConfig controls how the opencode config file is generated and pushed.
+type OpencodeConfig struct {
+	ConfigTemplate string `json:"config_template"` // path to Go text/template, e.g. /etc/wsd/opencode.json.tmpl
+	SecretsFile    string `json:"secrets_file"`    // path to JSON secrets file passed as template data
 }
 
 // VMConfig holds per-VM resource limits.
 type VMConfig struct {
-	VCPUs            int `json:"vcpus"`
-	MemMiB           int `json:"mem_mib"`
-	WorkspaceDiskGiB int `json:"workspace_disk_gib"`
+	VCPUs            int    `json:"vcpus"`
+	MemMiB           int    `json:"mem_mib"`
+	WorkspaceDiskGiB int    `json:"workspace_disk_gib"`
+	CPUMax           string `json:"cpu_max"` // cgroup v2 cpu.max value, e.g. "200000 100000"
 }
 
 // NetConfig describes the host-side network configuration.
@@ -81,6 +89,9 @@ func (cfg *Config) applyDefaults() {
 	}
 	if cfg.IdleTimeout == "" {
 		cfg.IdleTimeout = "30m"
+	}
+	if cfg.VM.CPUMax == "" {
+		cfg.VM.CPUMax = fmt.Sprintf("%d 100000", cfg.VM.VCPUs*100000)
 	}
 }
 
