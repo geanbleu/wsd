@@ -3,6 +3,7 @@ package fc
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -115,5 +116,44 @@ func TestSetChrootPermissionsBootAFroid(t *testing.T) {
 	}
 	if err := setChrootPermissions(chroot, os.Getuid(), os.Getgid(), false); err != nil {
 		t.Fatalf("setChrootPermissions sans snapshot: %v", err)
+	}
+}
+
+// TestConsoleTail : la console invitée est la seule trace d'un invité qui ne
+// démarre pas. Elle enrichit les erreurs, donc elle ne doit jamais en produire.
+func TestConsoleTail(t *testing.T) {
+	chroot := t.TempDir()
+
+	if got := ConsoleTail(chroot); got != "" {
+		t.Errorf("sans journal, ConsoleTail doit être vide, obtenu %q", got)
+	}
+
+	if err := os.MkdirAll(filepath.Join(chroot, "run"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(chroot, "run", "console.log")
+	if err := os.WriteFile(log, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := ConsoleTail(chroot); got != "" {
+		t.Errorf("journal vide : ConsoleTail doit être vide, obtenu %q", got)
+	}
+
+	var lines []string
+	for i := 1; i <= 40; i++ {
+		lines = append(lines, "ligne "+strconv.Itoa(i))
+	}
+	if err := os.WriteFile(log, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := ConsoleTail(chroot)
+	if !strings.Contains(got, "ligne 40") {
+		t.Error("la dernière ligne doit apparaître")
+	}
+	if strings.Contains(got, "ligne 25") {
+		t.Error("ConsoleTail doit se limiter aux dernières lignes")
+	}
+	if !strings.Contains(got, log) {
+		t.Error("le chemin du journal doit être indiqué pour pouvoir le relire en entier")
 	}
 }

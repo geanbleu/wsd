@@ -568,8 +568,13 @@ regarder :
 ```bash
 sudo journalctl -u wsd -n 80
 sudo ls /srv/jailer/firecracker/            # un chroot résiduel nomme le build
-sudo cat /srv/jailer/firecracker/<id>/root/run/firecracker.log
+chroot=/srv/jailer/firecracker/<id>/root
+sudo cat $chroot/run/console.log            # noyau et systemd de l'invité
+sudo cat $chroot/run/firecracker.log        # Firecracker lui-même
 ```
+
+La console de l'invité est la trace décisive : c'est là qu'on voit si le noyau
+monte son rootfs et si `wsagent.service` démarre.
 
 ### ✅ Vérification
 
@@ -731,7 +736,8 @@ sudo grep -rl "$(python3 -c 'import json;print(json.load(open("/etc/wsd/secrets.
 | `wsproxy` ne démarre pas | 11 | issuer OIDC injoignable : la découverte est faite au démarrage |
 | `netns setup: nft apply` | 9/10 | l'erreur porte désormais la sortie de `nft` ; vérifier `net.dns` et `net.egress_iface` |
 | `kernel invité (vmlinux) introuvable` | 7 | artefacts non déposés dans `images/<image_id>/` |
-| `golden build` échoue après le boot | 9 | log firecracker dans `/srv/jailer/firecracker/<id>/root/run/firecracker.log` |
+| `golden build` échoue après le boot | 9 | les deux journaux du chroot : `run/firecracker.log` et `run/console.log` (console de l'invité) |
+| `agent non disponible après 60 s` | 9/10 | `run/console.log` du chroot : l'invité démarre-t-il, et `wsagent.service` avec lui ? Voir [ADMIN.md](ADMIN.md#wsagent-agent-non-disponible-après-60-s) |
 | La VM démarre mais ne joint rien | 6 | masquerade host absent, ou `egress.allow` trop restrictif |
 | 404 « workspace introuvable » | 6/10 | le `Host` doit être `<id>.ws.<domain>`, et `domain` identique dans les deux configs, sans préfixe `ws.` |
 

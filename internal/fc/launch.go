@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"wsd/internal/disk"
@@ -39,7 +40,8 @@ type LaunchResult struct {
 	PID        int
 	APISocket  string
 	VsockPath  string
-	ChromeRoot string
+	ChrootRoot string
+	ConsoleLog string
 }
 
 // Launch prepares the jailer chroot and starts Firecracker. It returns once the
@@ -51,6 +53,7 @@ func Launch(ctx context.Context, p LaunchParams) (*LaunchResult, error) {
 	apiSock := filepath.Join(chroot, "run", "firecracker.sock")
 	vsockPath := filepath.Join(chroot, "v.sock")
 	logPath := filepath.Join(chroot, "run", "firecracker.log")
+	consolePath := filepath.Join(chroot, "run", "console.log")
 
 	if err := checkSources(p); err != nil {
 		return nil, err
@@ -113,7 +116,19 @@ func Launch(ctx context.Context, p LaunchParams) (*LaunchResult, error) {
 		"--level", "Info",
 	)
 	cmd := exec.CommandContext(ctx, p.JailerBin, jailerArgs...)
-	cmd.Stderr = os.Stderr
+
+	// La cmdline invitée contient « console=ttyS0 » : sans cette redirection,
+	// la sortie du noyau et de systemd est perdue, et un invité qui ne démarre
+	// pas ne laisse aucune trace. Le fichier est ouvert ici, donc hérité par
+	// le process : les droits du chroot ne s'y appliquent pas.
+	console, err := os.OpenFile(consolePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("journal de la console invitée: %w", err)
+	}
+	defer console.Close()
+	cmd.Stdout = console
+	cmd.Stderr = console
+
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("jailer start: %w", err)
 	}
@@ -128,7 +143,8 @@ func Launch(ctx context.Context, p LaunchParams) (*LaunchResult, error) {
 	}
 	if _, err := os.Stat(apiSock); err != nil {
 		cmd.Process.Kill()
-		return nil, fmt.Errorf("socket API non créé dans les 5 s (log: %s)", logPath)
+		return nil, fmt.Errorf("socket API non créé dans les 5 s (log: %s)%s",
+			logPath, ConsoleTail(chroot))
 	}
 
 	return &LaunchResult{
@@ -136,8 +152,27 @@ func Launch(ctx context.Context, p LaunchParams) (*LaunchResult, error) {
 		PID:        cmd.Process.Pid,
 		APISocket:  apiSock,
 		VsockPath:  vsockPath,
-		ChromeRoot: chroot,
+		ChrootRoot: chroot,
+		ConsoleLog: consolePath,
 	}, nil
+}
+
+// ConsoleTail renvoie la fin de la console invitée d'un chroot, prête à être
+// jointe à une erreur. Chaîne vide si le journal est absent ou illisible : il
+// s'agit toujours d'enrichir une erreur, jamais d'en produire une.
+func ConsoleTail(chroot string) string {
+	const maxLines = 15
+	data, err := os.ReadFile(filepath.Join(chroot, "run", "console.log"))
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	return "\nconsole invitée (" + filepath.Join(chroot, "run", "console.log") +
+		", " + strconv.Itoa(len(lines)) + " dernières lignes) :\n" +
+		strings.Join(lines, "\n")
 }
 
 // setChrootPermissions rend les ressources du chroot accessibles à l'uid sous

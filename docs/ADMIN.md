@@ -187,11 +187,21 @@ Les logs sont structurés (`log/slog`, format texte). Le champ `ws_id` est prés
 sur toutes les lignes liées à un workspace, ce qui permet de suivre un cycle de
 vie complet. Le contenu des fichiers poussés dans les VM n'est jamais journalisé.
 
-Le log de chaque VM est dans son chroot :
+Chaque VM laisse deux journaux dans son chroot :
 
 ```bash
+# journal de Firecracker lui-même (API, devices, snapshots)
 cat /srv/jailer/firecracker/<id>/root/run/firecracker.log
+
+# console de l'invité : noyau, systemd, unités qui démarrent ou échouent
+cat /srv/jailer/firecracker/<id>/root/run/console.log
 ```
+
+`console.log` est la seule trace d'un invité qui ne démarre pas, ou qui démarre
+sans que wsagent réponde. wsd en joint les dernières lignes aux erreurs de
+lancement, mais le fichier complet est toujours là — tant que le chroot
+existe. Un chroot est supprimé au suspend et à la suppression du workspace,
+jamais après un échec : c'est précisément le cas où on en a besoin.
 
 ### Santé
 
@@ -565,6 +575,34 @@ ls -lh /var/lib/wsd/workspaces/<id>/suspend/     # mem et vmstate présents ?
 
 Si `suspend/` est incomplet, le snapshot est inutilisable : `wsctl rm --keep-data`
 puis recréer.
+
+### `wsagent: agent non disponible après 60 s`
+
+La VM a été lancée mais l'agent invité ne répond pas en vsock. L'erreur porte
+la dernière erreur de connexion et la fin de la console, ce qui sépare les trois
+causes :
+
+| Dernière erreur | Cause | Piste |
+|---|---|---|
+| `no such file or directory` sur `v.sock` | Firecracker n'a pas créé le socket vsock | `firecracker.log` ; vérifier que `PUT /vsock` a bien été accepté |
+| `connection refused` au handshake | l'invité tourne, mais rien n'écoute sur le port 1024 | `console.log` : wsagent a-t-il démarré ? |
+| rien dans la console | l'invité ne démarre pas du tout | noyau sans virtio en dur, rootfs illisible, mauvais `image_id` |
+
+```bash
+chroot=/srv/jailer/firecracker/<id>/root
+sudo cat $chroot/run/console.log
+sudo cat $chroot/run/firecracker.log
+sudo ls -l $chroot/v.sock
+```
+
+Ce que la console doit montrer dans un démarrage sain : le montage du rootfs
+(`EXT4-fs (vda): mounted filesystem`), `systemd[1]: Detected virtualization
+kvm`, puis le démarrage de `wsagent.service`. Si elle s'arrête avant le
+montage, le problème est dans le noyau ou le rootfs — un noyau dont les pilotes
+virtio ne sont pas compilés en dur ne trouve pas `/dev/vda`, la cmdline
+contenant `nomodule` et l'invité n'ayant pas d'initramfs. `make kernel`
+vérifie ce point depuis la correction du script, mais un `vmlinux` construit
+avant ne l'a pas été : le reconstruire lève le doute.
 
 ### La VM tourne mais ne joint rien
 

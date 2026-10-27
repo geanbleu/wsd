@@ -292,7 +292,7 @@ func (h *Handler) coldBoot(ctx context.Context, wsID, id8, nsName, wsDisk string
 	}
 	log.Info("VM démarrée, attente wsagent...")
 
-	if err := waitAgent(ctx, res.VsockPath); err != nil {
+	if err := waitAgent(ctx, res.VsockPath, res.ChrootRoot); err != nil {
 		return fmt.Errorf("wsagent: %w", err)
 	}
 	if err := callPostRestore(ctx, res.VsockPath, wsID, false, []string{"code-server.service"}, ocFiles); err != nil {
@@ -370,7 +370,7 @@ func (h *Handler) bootFromGolden(ctx context.Context, wsID, id8, nsName, wsDisk 
 	}
 	log.Info("VM restaurée depuis golden, attente wsagent...")
 
-	if err := waitAgent(ctx, res.VsockPath); err != nil {
+	if err := waitAgent(ctx, res.VsockPath, res.ChrootRoot); err != nil {
 		return fmt.Errorf("wsagent: %w", err)
 	}
 	// mount_workspace=true : wsagent démonte le /workspace du golden et monte le disque frais
@@ -678,7 +678,7 @@ func (h *Handler) doResume(wsID string) error {
 	}
 	log.Info("VM reprise, attente wsagent...")
 
-	if err := waitAgent(ctx, res.VsockPath); err != nil {
+	if err := waitAgent(ctx, res.VsockPath, res.ChrootRoot); err != nil {
 		h.Store.MarkError(wsID)
 		return fmt.Errorf("wsagent: %w", err)
 	}
@@ -877,7 +877,7 @@ func (h *Handler) buildGolden(ctx context.Context) error {
 	}
 	log.Info("VM golden démarrée, attente wsagent...")
 
-	if err := waitAgent(ctx, res.VsockPath); err != nil {
+	if err := waitAgent(ctx, res.VsockPath, res.ChrootRoot); err != nil {
 		return fmt.Errorf("wsagent: %w", err)
 	}
 	// Pas de config opencode dans le golden : aucun secret dans les snapshots (SPEC §12)
@@ -926,7 +926,7 @@ func (h *Handler) buildGolden(ctx context.Context) error {
 	if err := os.MkdirAll(goldenDir, 0o755); err != nil {
 		return err
 	}
-	chroot := res.ChromeRoot
+	chroot := res.ChrootRoot
 	if err := os.Rename(
 		filepath.Join(chroot, "run", "vmstate"),
 		filepath.Join(goldenDir, "vmstate"),
@@ -1086,7 +1086,7 @@ func (h *Handler) destroyWorkspace(wsID string, ws *store.Workspace, keepData bo
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-func waitAgent(ctx context.Context, vsockPath string) error {
+func waitAgent(ctx context.Context, vsockPath, chroot string) error {
 	tryPing := func() error {
 		conn, err := agentproto.Dial(vsockPath)
 		if err != nil {
@@ -1103,6 +1103,7 @@ func waitAgent(ctx context.Context, vsockPath string) error {
 		return nil
 	}
 
+	var lastErr error
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		select {
@@ -1112,10 +1113,17 @@ func waitAgent(ctx context.Context, vsockPath string) error {
 		}
 		if err := tryPing(); err == nil {
 			return nil
+		} else {
+			lastErr = err
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	return fmt.Errorf("agent non disponible après 60 s")
+	// La dernière erreur et la console invitée distinguent les trois causes :
+	// socket vsock absent (Firecracker n'a pas configuré le device), connexion
+	// refusée (l'invité tourne mais l'agent n'écoute pas), ou invité qui ne
+	// démarre pas du tout.
+	return fmt.Errorf("agent non disponible après 60 s (dernière erreur : %v)%s",
+		lastErr, fc.ConsoleTail(chroot))
 }
 
 // opencodeFiles renders the opencode config template (if configured) and returns a FileSpec
