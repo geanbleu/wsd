@@ -207,7 +207,9 @@ Les opérations concurrentes sur un même id sont sérialisées. `ensure` est id
 ## 11. wsproxy
 
 - Écoute en HTTP (TLS en option avec certificat wildcard, ou derrière HAProxy).
-- Extrait `<id>` du sous-domaine `<id>.ws.<domaine>`.
+- Extrait `<id>` du sous-domaine `<id>.ws.<domaine>`. Le champ `domain` de la
+  config porte le domaine de base : le label `ws` est ajouté par le code, des
+  deux côtés (wsproxy pour le routage, wsd pour les liens de `wsctl token`).
 - Auth :
   - phase 4 : cookie signé (HMAC) délivré par un token d'accès ;
   - phase 7 : OIDC, avec vérification que `owner` du workspace correspond au `sub`/email.
@@ -239,7 +241,7 @@ Les opérations concurrentes sur un même id sont sérialisées. `ensure` est id
   "egress": {"allow": [{"cidr": "0.0.0.0/0", "ports": [443]}, {"cidr": "192.0.2.10/32", "ports": [8080]}]},
   "idle_timeout": "30m",
   "opencode": {"config_template": "/etc/wsd/opencode.json.tmpl", "secrets_file": "/etc/wsd/secrets.json"},
-  "domain": "ws.example.internal"
+  "domain": "example.internal"
 }
 ```
 

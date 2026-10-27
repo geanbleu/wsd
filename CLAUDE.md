@@ -2,7 +2,7 @@
 
 Plateforme qui lance à la demande des microVMs Firecracker. Chacune contient code-server (VS Code web) et opencode comme harness d'agent. Un workspace inactif est suspendu sur disque, puis réveillé à la première requête. L'objectif est un nombre de workspaces limité par le disque, pas par la RAM.
 
-La spec complète est dans `docs/SPEC.md` et le plan par phases dans `docs/PLAN.md`. **Lis les deux avant toute tâche.** Travaille toujours dans le cadre d'une phase du plan.
+La spec complète est dans `docs/SPEC.md` et le plan par phases dans `docs/PLAN.md`. **Lis les deux avant toute tâche.** Travaille toujours dans le cadre d'une phase du plan. `README.md` donne la vue d'ensemble et `docs/CONFIG.md` la référence de configuration ; `docs/OPS.md` l'exploitation.
 
 ## Conventions
 
@@ -30,9 +30,11 @@ internal/store/     état SQLite, machine à états des workspaces
 internal/disk/      copies reflink, création des disques workspace
 internal/agentproto/ protocole host<->agent (JSON délimité par lignes)
 internal/api/       handlers HTTP de wsd
+internal/config/    config du daemon + validation explicite
+internal/version/   version de build, injectée par le Makefile
 image/          Dockerfile du rootfs invité + build.sh (→ ext4)
 kernel/         build.sh + config du kernel invité
-deploy/         unités systemd, exemple de wsd.json
+deploy/         install/uninstall, fetch-deps, unités systemd, exemples de config
 test/integration/   tests nécessitant root + KVM (build tag `integration`)
 ```
 
@@ -43,7 +45,10 @@ test/integration/   tests nécessitant root + KVM (build tag `integration`)
 - `sudo make test-integration` : tests d'intégration, avec root et `/dev/kvm`.
 - `make image` : rootfs ext4 dans `build/rootfs.ext4`.
 - `make kernel` : `build/vmlinux`.
-- `make lint` : `go vet` + `staticcheck` s'il est installé.
+- `make lint` : `go vet`, `gofmt -l` + `staticcheck` s'il est installé.
+- `make install` / `make uninstall` : `deploy/install.sh` / `deploy/uninstall.sh` sur le host courant (root).
+- `make dist` : archive de déploiement host dans `dist/`.
+- `make help` : liste les cibles.
 
 ## Règles de travail
 

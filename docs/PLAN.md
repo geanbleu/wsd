@@ -86,6 +86,49 @@ Chaque phase est livrable seule. On ne passe à la suivante que lorsque les crit
 
 **Acceptation :** déploiement sur un host vierge en suivant uniquement `docs/OPS.md`.
 
+## Phase 8 — Packaging et documentation
+
+- `README.md` : vue d'ensemble, prérequis, démarrage rapide, carte de la doc.
+- `docs/CONFIG.md` : référence de tous les champs de `wsd.json`, `wsproxy.json`
+  et `versions.env`, avec défauts et champs requis.
+- `deploy/install.sh` et `deploy/uninstall.sh` : idempotents, `--dry-run`,
+  `DESTDIR` pour une installation décalée vérifiable sans root. Comptes système,
+  répertoires, binaires, configs sans écrasement, secret HMAC généré, sysctl,
+  unités systemd.
+- `deploy/fetch-deps.sh` : firecracker et jailer aux versions épinglées, SHA256
+  vérifié, swagger de la version déposé dans `/usr/share/doc/wsd`.
+- `make install`, `make uninstall`, `make dist` (archive host + `.sha256`),
+  `make fmt`, `make help` ; version de build injectée par ldflags et flag
+  `-version` sur les quatre binaires.
+- `docs/OPS.md` : installation réécrite autour de `install.sh`, mise à jour des
+  binaires, désinstallation.
+
+**Acceptation :**
+- `make build test lint dist` passe ;
+- `DESTDIR=<dir> deploy/install.sh --skip-host-check` produit l'arborescence
+  attendue, est rejouable sans écraser les configs, et `uninstall.sh --purge`
+  remet le répertoire dans l'état initial sans toucher aux données ;
+- déploiement sur un host vierge en suivant uniquement `docs/OPS.md`.
+
+## Anomalies ouvertes
+
+Relevées pendant la phase 8, à traiter avant toute mise en service.
+
+1. **Les VM sont tuées à la fin de la requête HTTP.** `internal/fc.Launch`
+   lance jailer avec `exec.CommandContext(ctx, ...)` et reçoit le contexte de la
+   requête (`r.Context()` dans `createWorkspace`, `resumeWorkspace`,
+   `ensureWorkspace`). Quand le handler retourne, le contexte est annulé et Go
+   tue le process jailer/firecracker. Un workspace créé meurt donc juste après
+   la réponse. Correctif : détacher le lancement du contexte de requête
+   (contexte propre au workspace, annulé seulement par suspend/delete).
+2. **`net.dns` et `net.egress_iface` ne sont pas validés.** Vides, ils
+   produisent des règles `nft` invalides : l'échec apparaît à la première
+   création de workspace, pas au démarrage de wsd. À ajouter dans
+   `config.validate()`.
+3. **`wsctl token` produit un lien en `http://`** sans tenir compte de
+   `external_scheme` de wsproxy. Derrière un terminateur TLS, le lien doit être
+   corrigé à la main.
+
 ## Pistes hors v1
 
 - Snapshots Diff avec dirty page tracking pour accélérer le suspend.

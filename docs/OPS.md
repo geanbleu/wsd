@@ -12,98 +12,146 @@ Points vérifiés : `/dev/kvm`, cgroup v2, filesystem reflink sur `/var/lib/wsd`
 `/srv/jailer` (même FS), présence de `ip`, `nft`, `firecracker`, `jailer`,
 `ip_forward`.
 
+`firecracker` et `jailer` sont signalés KO tant qu'ils ne sont pas installés :
+`deploy/install.sh --with-deps` (ou `deploy/fetch-deps.sh`) s'en charge. La liste
+des paquets nécessaires aux builds est dans le [README](../README.md).
+
 ## Installation initiale
 
-### 1. Binaires
+Tout se fait avec `deploy/install.sh`, qui est idempotent : il peut être relancé
+sans risque, et ne remplace jamais une configuration déjà en place (il dépose la
+nouvelle version de l'exemple à côté, en `.new`).
+
+### 1. Récupérer les fichiers
+
+Depuis le dépôt :
 
 ```bash
 make build
-install -m 0755 bin/wsd bin/wsproxy bin/wsctl /usr/local/bin/
-install -m 0755 bin/wsagent /usr/local/bin/   # intégré à l'image invitée
 ```
 
-### 2. Utilisateur et groupes
+Ou depuis une archive produite par `make dist` sur une machine de build :
 
 ```bash
-groupadd -r wsd
-useradd -r -g wsd -s /usr/sbin/nologin wsproxy
-# wsd tourne en root ; wsproxy dans le groupe wsd pour accéder au socket
+tar xzf wsd-<version>-linux-amd64.tar.gz
+cd wsd-<version>-linux-amd64
 ```
 
-### 3. Répertoires
+### 2. Installer
 
 ```bash
-mkdir -p /var/lib/wsd/{images,workspaces,goldens}
-mkdir -p /srv/jailer
-mkdir -p /run/wsd
-mkdir -p /etc/wsd
-chmod 0750 /etc/wsd   # contient les secrets
+sudo bash deploy/install.sh --with-deps
 ```
 
-### 4. Firecracker et jailer
+Ce que fait le script :
 
-Versions épinglées dans `deploy/versions.env`. Télécharger depuis les releases
-GitHub de firecracker-microvm et les installer dans `/usr/local/bin/`.
+| Étape | Détail |
+|---|---|
+| Vérification | `bin/{wsd,wsproxy,wsctl}` présents, puis `check-host.sh`. Il s'arrête si un prérequis est KO (`--skip-host-check` pour forcer). |
+| Dépendances | `--with-deps` télécharge `firecracker` et `jailer` aux versions de `versions.env` depuis les releases GitHub, vérifie le SHA256, et dépose le swagger de la version dans `/usr/share/doc/wsd/`. |
+| Comptes | groupe système `wsd`, utilisateur système `wsproxy` (groupe `wsd`, sans shell ni home). |
+| Répertoires | `/var/lib/wsd/{images,workspaces,goldens}`, `/srv/jailer`, `/etc/wsd` (0750), `/usr/share/doc/wsd`. |
+| Binaires | `wsd`, `wsproxy`, `wsctl` dans `/usr/local/bin`. `wsagent` n'est **pas** installé sur le host : il est intégré au rootfs invité par `image/build.sh`. |
+| Configuration | `/etc/wsd/{wsd,wsproxy}.json` depuis les exemples, `versions.env` de référence, exemples opencode en `.example`. Un `hmac_secret` de 32 octets aléatoires est généré à la première installation. |
+| sysctl | `/etc/sysctl.d/90-wsd.conf` (`net.ipv4.ip_forward=1`), appliqué immédiatement. |
+| systemd | `wsd.service` et `wsproxy.service`, puis `daemon-reload`. Les services ne sont **pas** démarrés. |
 
-### 5. Image invitée
+Options utiles : `--dry-run` (affiche sans exécuter), `--prefix`, `--sysconfdir`,
+`--data-dir`, `--jailer-dir`, `--unit-dir`. `DESTDIR=<dir>` installe sous une
+racine décalée, sans toucher aux comptes, à sysctl ni à systemd — pratique pour
+inspecter le contenu d'une installation. `deploy/install.sh --help` liste tout.
+
+### 3. Configurer
+
+Référence complète de tous les champs : [`CONFIG.md`](CONFIG.md).
+
+Au minimum, dans `/etc/wsd/wsd.json` :
+
+- `domain` : le domaine **de base**, sans `ws.` — les hôtes des workspaces sont
+  `<id>.ws.<domain>` ;
+- `net.egress_iface` : l'interface de sortie du host (`ip route get 1.1.1.1`) ;
+- `net.dns` : le résolveur autorisé depuis les VM ;
+- `egress.allow` : ce que les workspaces ont le droit de joindre ;
+- `image_id` : le nom du répertoire d'image à créer à l'étape suivante ;
+- `vm.*` : vCPU, mémoire, taille du disque workspace.
+
+Et dans `/etc/wsd/wsproxy.json` : le même `domain`, puis soit rien de plus
+(auth par token), soit la section `oidc`.
+
+`socket_group` (défaut `wsd`) est ce qui permet à wsproxy de joindre wsd : wsd
+tourne en root et donne son socket `/run/wsd/wsd.sock` à ce groupe en 0660. Si
+le groupe n'existe pas, wsd le signale dans son journal et wsproxy ne pourra
+pas se connecter.
+
+### 4. Image invitée et kernel
+
+Ces deux builds ont besoin de `docker` et d'une toolchain de compilation
+kernel ; ils se font depuis le dépôt, pas depuis l'archive de déploiement.
 
 ```bash
-make image           # produit build/rootfs.ext4
-make kernel          # produit build/vmlinux
-mkdir -p /var/lib/wsd/images/debian-bookworm-v1
+make image           # → build/rootfs.ext4
+make kernel          # → build/vmlinux  (long : compilation complète)
+
+install -d /var/lib/wsd/images/debian-bookworm-v1    # = image_id de wsd.json
 cp build/rootfs.ext4 build/vmlinux /var/lib/wsd/images/debian-bookworm-v1/
 ```
 
-Le `image_id` dans `wsd.json` doit correspondre au nom du répertoire (ici
-`debian-bookworm-v1`).
+Le nom du répertoire doit être exactement l'`image_id` de `wsd.json`.
 
-### 6. Configuration
-
-Copier et adapter les exemples :
+### 5. Démarrer
 
 ```bash
-cp deploy/wsd.json     /etc/wsd/wsd.json
-cp deploy/wsproxy.json /etc/wsd/wsproxy.json
-```
-
-Générer un secret HMAC aléatoire pour wsproxy :
-
-```bash
-openssl rand -hex 32
-# coller la valeur dans wsproxy.json → hmac_secret
-```
-
-Si opencode est utilisé, créer le template et le fichier secrets :
-
-```bash
-# /etc/wsd/opencode.json.tmpl  (Go text/template, données = contenu de secrets.json)
-# /etc/wsd/secrets.json        (JSON plat, ex. {"api_key":"sk-...","endpoint":"..."})
-chmod 0600 /etc/wsd/secrets.json
-```
-
-### 7. Systemd
-
-```bash
-cp deploy/wsd.service     /etc/systemd/system/
-cp deploy/wsproxy.service /etc/systemd/system/
-systemctl daemon-reload
 systemctl enable --now wsd wsproxy
+systemctl status wsd wsproxy
+journalctl -u wsd -f
 ```
 
-### 8. Golden snapshot initial
+### 6. Golden snapshot initial
 
 ```bash
-wsctl golden build
-wsctl golden get   # vérifier le golden actif
+wsctl golden build     # boot à froid, attente de code-server, snapshot Full
+wsctl golden get       # vérifier le golden actif
 ```
 
-### 9. Test de bout en bout
+Sans golden actif, les créations de workspace retombent sur un boot à froid :
+elles fonctionnent, mais sont lentes.
+
+### 7. Test de bout en bout
 
 ```bash
 wsctl create test-ws --owner admin@example.com
 wsctl ls
-wsctl token <id>   # ouvrir le lien dans un navigateur
+wsctl token <id>       # ouvrir le lien dans un navigateur
 ```
+
+### 8. Mise à jour des binaires
+
+```bash
+make build                                   # ou décompresser la nouvelle archive
+sudo bash deploy/install.sh --skip-host-check
+systemctl restart wsd wsproxy
+```
+
+Les workspaces en cours ne sont pas interrompus : `wsd.service` est en
+`KillMode=process`, les firecracker tournent dans leurs propres cgroups, et wsd
+réconcilie son état au redémarrage. Vérifier ce qui tourne :
+
+```bash
+wsd -version && wsproxy -version && wsctl -version
+```
+
+### 9. Désinstallation
+
+```bash
+sudo bash deploy/uninstall.sh              # services, unités, binaires, doc
+sudo bash deploy/uninstall.sh --purge      # + /etc/wsd, compte wsproxy, groupe wsd
+sudo bash deploy/uninstall.sh --purge-data # + disques workspace, goldens, chroots
+```
+
+`--purge-data` demande une confirmation explicite : il détruit les données
+utilisateur. Supprimer les workspaces avec `wsctl rm <id>` **avant** de
+désinstaller, sinon les netns, veth, règles nftables et chroots restent sur le
+host — le script le signale et demande confirmation.
 
 ---
 
@@ -134,9 +182,12 @@ Colonnes : ID, NOM, ÉTAT, RSS (MiB privé), PSS (MiB partagé), DERNIÈRE ACTIV
 ### Métriques Prometheus
 
 ```bash
-wsctl -socket /run/wsd/wsd.sock get-metrics   # ou directement :
 curl --unix-socket /run/wsd/wsd.sock http://wsd/v1/metrics
 ```
+
+Le socket est en 0660, groupe `wsd` : lire les métriques demande d'être root ou
+membre du groupe. Pour un scrape Prometheus, passer par un exportateur qui lit
+ce socket.
 
 ---
 
@@ -168,7 +219,7 @@ curl --unix-socket /run/wsd/wsd.sock http://wsd/v1/metrics
    ```bash
    wsctl ls
    # pour chaque workspace à migrer :
-   wsctl rm <id>        # supprime (garde workspace.ext4 si --keep_data=1)
+   wsctl rm <id> --keep-data   # garde /var/lib/wsd/workspaces/<id>/workspace.ext4
    wsctl create <nom> --owner <owner>
    ```
 
@@ -235,4 +286,6 @@ sqlite3 /var/lib/wsd/wsd.db "DELETE FROM goldens WHERE id='<ancien-id>'"
 | code-server inaccessible | `wsctl get <id>` ; vérifier l'état `running` |
 | Page « réveil en cours » ne passe pas | `wsctl top` pour voir RSS et état |
 | OIDC auth échoue | `journalctl -u wsproxy -n 50` ; vérifier `redirect_uri` enregistrée côté provider |
+| wsproxy ne joint pas wsd | `ls -l /run/wsd/wsd.sock` (attendu `srw-rw---- root wsd`), `id wsproxy` (doit être dans `wsd`), `socket_group` dans `wsd.json` |
+| 404 « workspace introuvable » | le `Host` doit être `<id>.ws.<domain>` et `domain` identique dans les deux configs, sans préfixe `ws.` |
 | Pool IP épuisé | `sqlite3 /var/lib/wsd/wsd.db "SELECT count(*) FROM ip_allocations"` ; supprimer des workspaces |
