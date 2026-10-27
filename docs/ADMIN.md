@@ -741,6 +741,6 @@ Elles changent la façon de travailler au quotidien :
 | Histogrammes de latence en mémoire | les métriques repartent de zéro à chaque redémarrage de wsd |
 | Mono-host | pas de scheduler, pas de réplication des goldens |
 
-Les anomalies encore ouvertes, dont celle qui empêche une VM de survivre à sa
-requête de création, sont suivies dans
-[`PLAN.md` § Anomalies ouvertes](PLAN.md#anomalies-ouvertes).
+Les anomalies encore ouvertes, dont le masquerade host que wsd ne pose pas,
+sont suivies dans [`PLAN.md` § Anomalies](PLAN.md#anomalies), avec la liste de
+celles déjà corrigées et leur cause.

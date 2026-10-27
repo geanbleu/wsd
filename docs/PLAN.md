@@ -120,42 +120,40 @@ Chaque phase est livrable seule. On ne passe à la suivante que lorsque les crit
   `FICLONE` (vérifié sur xfs et tmpfs) ;
 - déploiement sur un host vierge en suivant uniquement `docs/INSTALL.md`.
 
-## Anomalies ouvertes
+## Anomalies
 
-Relevées pendant la phase 8, à traiter avant toute mise en service.
+### Ouvertes
 
-0. ~~**`wsctl golden build` échouait sur une contrainte FOREIGN KEY.**~~
-   Corrigé : `ip_allocations.workspace_id` n'a plus de contrainte
-   `REFERENCES workspaces(id)`, la construction d'un golden allouant un /30
-   temporaire sans ligne dans `workspaces`. Migration 1 du schéma.
-0b. ~~**`netns setup: nft apply: exit status 1` à chaque création.**~~
-   Corrigé : le script nft commençait par `flush table`, ce qui échoue dans le
-   netns neuf d'un workspace, où la table n'existe pas encore. La table est
-   maintenant déclarée vide avant d'être vidée. Le forwarding IPv4 est aussi
-   réglé explicitement dans le netns, et les erreurs de `ip` et `nft` portent
-   désormais leur sortie — un `exit status 1` nu ne disait rien.
-1b. **Le masquerade host n'est jamais installé.** `netns.SetupHostMasquerade`
+1. **Le masquerade host n'est jamais installé.** `netns.SetupHostMasquerade`
    existe mais n'a aucun appelant : la règle de masquerade de `net.pool` vers
    `net.egress_iface` exigée par SPEC §6 n'est donc pas posée, et les VM ne
    joignent rien au-delà de leur veth. À câbler au démarrage de wsd, ou à
-   confier à une table nft gérée hors wsd (cf. docs/INSTALL.md § Réseau du host) —
-   c'est un choix d'exploitation, wsd touchant alors au pare-feu du host.
-1. **Les VM sont tuées à la fin de la requête HTTP.** `internal/fc.Launch`
-   lance jailer avec `exec.CommandContext(ctx, ...)` et reçoit le contexte de la
-   requête (`r.Context()` dans `createWorkspace`, `resumeWorkspace`,
-   `ensureWorkspace`). Quand le handler retourne, le contexte est annulé et Go
-   tue le process jailer/firecracker. Un workspace créé meurt donc juste après
-   la réponse. Correctif : détacher le lancement du contexte de requête
-   (contexte propre au workspace, annulé seulement par suspend/delete).
-   `wsctl golden build` n'est pas concerné : il prend son snapshot et tue la VM
-   lui-même avant que le handler ne retourne.
+   confier à une table nft gérée hors wsd (cf. docs/INSTALL.md § Réseau du
+   host) — c'est un choix d'exploitation, wsd touchant alors au pare-feu du
+   host.
 2. **`net.egress_iface` n'est pas validé** et n'est utilisé que par
-   `Teardown` : son nom n'est vérifié à aucun moment. `net.dns` est désormais
-   refusé explicitement s'il est vide, mais au moment de la création, pas au
-   démarrage de wsd. Les deux devraient être validés dans `config.validate()`.
+   `Teardown` : son nom n'est vérifié à aucun moment. `net.dns` est refusé
+   explicitement s'il est vide, mais au moment de la création, pas au démarrage
+   de wsd. Les deux devraient être validés dans `config.validate()`.
 3. **`wsctl token` produit un lien en `http://`** sans tenir compte de
    `external_scheme` de wsproxy. Derrière un terminateur TLS, le lien doit être
    corrigé à la main.
+
+### Corrigées
+
+Relevées en mettant un premier déploiement en service, dans cet ordre.
+
+| Symptôme | Cause |
+|---|---|
+| `allocation IP: FOREIGN KEY constraint failed (787)` sur `golden build` | `ip_allocations.workspace_id` référençait `workspaces(id)`, alors que la construction d'un golden alloue un /30 sans ligne de workspace. Contrainte retirée, migration 1 du schéma. |
+| `netns setup: nft apply: exit status 1` | le script nft commençait par `flush table`, qui échoue dans le netns neuf d'un workspace. La table est déclarée vide avant d'être vidée. |
+| `hardlink … : invalid cross-device link` | `data_dir` et `jailer_dir` sur deux filesystems. Erreur rendue explicite ; le remède est côté configuration. |
+| `Permission denied (os error 13) /rootfs.ext4` | jailer ne chown que les répertoires de sa hiérarchie : les drives en lecture-écriture doivent être donnés à l'uid de la VM, les fichiers partagés rester à root en 0644. |
+| `agent non disponible après 60 s (ping recv: EOF)` | `net.FileConn` ne sait pas envelopper un descripteur `AF_VSOCK` : l'agent fermait la connexion aussitôt acceptée. `os.NewFile` à la place. |
+| `code-server non disponible après 30 s` | le sondage était lancé dans le netns vers l'IP du netns, que la règle DNAT ne couvre pas. Il part désormais du host, par le chemin de wsproxy. |
+| workspace annoncé `running` puis mort dans la seconde | `fc.Launch` recevait le contexte de la requête HTTP et le passait à `exec.CommandContext` : Go tuait la VM dès que le handler répondait. La durée de vie d'une VM est gérée par son PID, le contexte ne borne plus que l'attente du socket API. |
+| `--owner` et `--keep-data` ignorés | `flag.Parse` s'arrête au premier argument non-flag ; `wsctl rm <id> --keep-data` supprimait donc le disque. |
+| console invitée perdue | la sortie du process firecracker n'était pas redirigée, alors que la cmdline contient `console=ttyS0` : un invité qui ne démarrait pas ne laissait aucune trace. Capturée dans `<chroot>/run/console.log`. |
 
 ## Pistes hors v1
 

@@ -115,7 +115,13 @@ func Launch(ctx context.Context, p LaunchParams) (*LaunchResult, error) {
 		"--log-path", "/run/firecracker.log",
 		"--level", "Info",
 	)
-	cmd := exec.CommandContext(ctx, p.JailerBin, jailerArgs...)
+	// Volontairement exec.Command et non exec.CommandContext : le contexte
+	// reçu ici est celui de la requête HTTP, et Go tue le process dès qu'il est
+	// annulé — la VM mourait donc à la seconde où le handler répondait. La
+	// durée de vie d'une VM est gérée explicitement par son PID, qu'il s'agisse
+	// de la suspendre, de la supprimer ou de la réconcilier au démarrage. Le
+	// contexte ne borne que l'attente ci-dessous.
+	cmd := exec.Command(p.JailerBin, jailerArgs...)
 
 	// La cmdline invitée contient « console=ttyS0 » : sans cette redirection,
 	// la sortie du noyau et de systemd est perdue, et un invité qui ne démarre
@@ -139,10 +145,15 @@ func Launch(ctx context.Context, p LaunchParams) (*LaunchResult, error) {
 		if _, err := os.Stat(apiSock); err == nil {
 			break
 		}
-		time.Sleep(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			stopProcess(cmd)
+			return nil, fmt.Errorf("attente du socket API interrompue: %w", ctx.Err())
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
 	if _, err := os.Stat(apiSock); err != nil {
-		cmd.Process.Kill()
+		stopProcess(cmd)
 		return nil, fmt.Errorf("socket API non créé dans les 5 s (log: %s)%s",
 			logPath, ConsoleTail(chroot))
 	}
@@ -155,6 +166,16 @@ func Launch(ctx context.Context, p LaunchParams) (*LaunchResult, error) {
 		ChrootRoot: chroot,
 		ConsoleLog: consolePath,
 	}, nil
+}
+
+// stopProcess tue le process lancé et le récolte, pour ne pas laisser de
+// zombie attaché à wsd.
+func stopProcess(cmd *exec.Cmd) {
+	if cmd.Process == nil {
+		return
+	}
+	cmd.Process.Kill()
+	cmd.Process.Wait()
 }
 
 // ConsoleTail renvoie la fin de la console invitée d'un chroot, prête à être

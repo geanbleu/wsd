@@ -1,11 +1,13 @@
 package fc
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestCheckSourcesImageAbsente : c'est le cas rencontré quand l'image invitée
@@ -156,4 +158,107 @@ func TestConsoleTail(t *testing.T) {
 	if !strings.Contains(got, log) {
 		t.Error("le chemin du journal doit être indiqué pour pouvoir le relire en entier")
 	}
+}
+
+// fakeJailer écrit un faux jailer qui crée le socket API attendu puis reste
+// vivant, afin d'exercer Launch sans KVM ni privilèges.
+func fakeJailer(t *testing.T, apiSock string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fake-jailer")
+	script := "#!/bin/sh\nmkdir -p \"$(dirname \"" + apiSock + "\")\"\n" +
+		"touch \"" + apiSock + "\"\nexec sleep 30\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestLaunchSurvitAuContexte : la VM ne doit pas mourir avec le contexte passé
+// à Launch, qui est celui de la requête HTTP. Avec exec.CommandContext, Go tuait
+// jailer dès que le handler répondait : un workspace créé était annoncé
+// « running » puis mourait dans la seconde.
+func TestLaunchSurvitAuContexte(t *testing.T) {
+	base := t.TempDir()
+	srcDir := filepath.Join(base, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := func(name string) string {
+		path := filepath.Join(srcDir, name)
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	wsID := "aaaaaaaa-0000-0000-0000-000000000000"
+	jailerDir := filepath.Join(base, "jailer")
+	apiSock := filepath.Join(jailerDir, "firecracker", wsID, "root", "run", "firecracker.sock")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	res, err := Launch(ctx, LaunchParams{
+		WorkspaceID:    wsID,
+		JailerBin:      fakeJailer(t, apiSock),
+		FirecrackerBin: "/bin/true",
+		JailerDir:      jailerDir,
+		NetnsPath:      "/var/run/netns/ws-aaaaaaaa",
+		UID:            os.Getuid(),
+		GID:            os.Getgid(),
+		MemMiB:         2048,
+		KernelSrc:      src("vmlinux"),
+		RootfsSrc:      src("rootfs.ext4"),
+		WorkspaceSrc:   src("workspace.ext4"),
+		HardlinkRootfs: true,
+	})
+	if err != nil {
+		cancel()
+		t.Fatalf("Launch: %v", err)
+	}
+	t.Cleanup(func() {
+		if p, err := os.FindProcess(res.PID); err == nil {
+			p.Kill()
+			p.Wait()
+		}
+	})
+
+	// kill(pid, 0) réussit aussi sur un zombie — un process tué mais pas encore
+	// récolté par wsd garderait donc son PID. L'état est lu dans /proc.
+	if st := procState(t, res.PID); st == "Z" || st == "" {
+		t.Fatalf("le process devrait être vivant juste après Launch, état %q", st)
+	}
+
+	// Ce que fait le handler HTTP quand il a répondu.
+	cancel()
+	time.Sleep(300 * time.Millisecond)
+
+	if st := procState(t, res.PID); st == "Z" || st == "" {
+		t.Errorf("le process a été tué par l'annulation du contexte de la requête (état %q)", st)
+	}
+	if res.ConsoleLog == "" {
+		t.Error("ConsoleLog doit être renseigné")
+	}
+	if _, err := os.Stat(res.ConsoleLog); err != nil {
+		t.Errorf("la console invitée doit être créée : %v", err)
+	}
+}
+
+// procState renvoie l'état du process dans /proc/<pid>/stat (« R », « S »,
+// « Z »…), ou la chaîne vide s'il n'existe plus.
+func procState(t *testing.T, pid int) string {
+	t.Helper()
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return ""
+	}
+	// Le nom de la commande est entre parenthèses et peut contenir des espaces :
+	// l'état est le premier champ après la dernière parenthèse fermante.
+	i := strings.LastIndex(string(data), ")")
+	if i < 0 {
+		return ""
+	}
+	fields := strings.Fields(string(data)[i+1:])
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
 }

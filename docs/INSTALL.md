@@ -20,19 +20,18 @@ minutes.
 
 ### Ce qui fonctionne et ce qui ne fonctionne pas encore
 
-Trois anomalies connues sont ouvertes, détaillées dans
-[`PLAN.md` § Anomalies ouvertes](PLAN.md#anomalies-ouvertes). Deux ont un effet
-direct sur ce guide :
+Trois anomalies connues restent ouvertes, détaillées dans
+[`PLAN.md` § Anomalies](PLAN.md#anomalies). Une seule a un effet direct sur ce
+guide :
 
 | Anomalie | Effet sur un premier déploiement |
 |---|---|
-| **Les VM sont tuées à la fin de la requête HTTP** (`fc.Launch` reçoit le contexte de la requête) | `wsctl create` répond `201` puis la VM meurt. `wsctl golden build` n'est **pas** concerné : il prend son snapshot avant que le handler ne retourne. En clair : la construction du golden aboutit, la création d'un workspace utilisable non. |
 | **Le masquerade host n'est jamais posé** par wsd (`netns.SetupHostMasquerade` n'a pas d'appelant) | Sans règle nft posée à la main (étape 6), les VM ne joignent rien au-delà de leur veth : ni DNS, ni registre, ni endpoint LLM. |
 | `net.egress_iface` n'est pas validé | Une interface inexistante ne se voit qu'à la première création de workspace. |
+| `wsctl token` produit un lien en `http://` | Derrière un terminateur TLS, corriger le schéma à la main. |
 
-Ce guide indique le contournement là où il faut. Déployer aujourd'hui a du sens
-pour valider le host, le stockage, le réseau et le golden ; pas pour ouvrir le
-service à des utilisateurs.
+Ce guide indique le contournement là où il faut. Le reste du parcours est
+vérifié de bout en bout : golden construit, workspace créé et joignable.
 
 ### Les deux machines
 
@@ -609,13 +608,7 @@ Le lien est émis en `http://` sans tenir compte du terminateur TLS : derrière
 HTTPS, remplacer le schéma à la main. Le token est à usage unique et sans date
 d'expiration ; le cookie qu'il pose vaut `cookie_ttl` (24 h par défaut).
 
-**C'est ici que l'anomalie des VM tuées se manifeste** : la réponse arrive, puis
-le process firecracker est tué avec le contexte de la requête. Symptôme : le
-workspace passe `running` puis devient injoignable, et `wsctl top` montre un
-RSS nul ou le workspace basculé en `error` au redémarrage de wsd. Tant que
-l'anomalie 1 n'est pas corrigée, l'étape 10 ne peut pas aboutir.
-
-### ✅ Vérification (quand l'anomalie 1 sera corrigée)
+### ✅ Vérification
 
 ```bash
 wsctl get <id>          # state=running, upstream=10.200.x.y:8080
