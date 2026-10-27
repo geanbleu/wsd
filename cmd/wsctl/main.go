@@ -81,14 +81,40 @@ func main() {
 	}
 }
 
+// parseArgs analyse les options d'une sous-commande où qu'elles soient, et
+// renvoie les arguments positionnels.
+//
+// flag.FlagSet.Parse s'arrête au premier argument non-flag : avec
+// « create recette --owner alice », l'option était purement ignorée, et avec
+// « rm <id> --keep-data » le disque de l'utilisateur était supprimé malgré la
+// demande explicite de le garder. L'usage documenté place les options après le
+// positionnel, on parse donc par passes successives.
+func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		rest := fs.Args()
+		if len(rest) == 0 {
+			return positional, nil
+		}
+		positional = append(positional, rest[0])
+		args = rest[1:]
+	}
+}
+
 func cmdCreate(ctx context.Context, c *http.Client, args []string) error {
 	fs := flag.NewFlagSet("create", flag.ExitOnError)
 	owner := fs.String("owner", "", "propriétaire du workspace")
-	fs.Parse(args)
-	if fs.NArg() == 0 {
+	rest, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(rest) == 0 {
 		return fmt.Errorf("nom requis")
 	}
-	name := fs.Arg(0)
+	name := rest[0]
 
 	body := fmt.Sprintf(`{"name":%q,"owner":%q}`, name, *owner)
 	var result map[string]any
@@ -102,7 +128,9 @@ func cmdCreate(ctx context.Context, c *http.Client, args []string) error {
 func cmdList(ctx context.Context, c *http.Client, args []string) error {
 	fs := flag.NewFlagSet("ls", flag.ExitOnError)
 	owner := fs.String("owner", "", "filtrer par owner")
-	fs.Parse(args)
+	if _, err := parseArgs(fs, args); err != nil {
+		return err
+	}
 
 	url := "/v1/workspaces"
 	if *owner != "" {
@@ -128,11 +156,14 @@ func cmdList(ctx context.Context, c *http.Client, args []string) error {
 func cmdRM(ctx context.Context, c *http.Client, args []string) error {
 	fs := flag.NewFlagSet("rm", flag.ExitOnError)
 	keepData := fs.Bool("keep-data", false, "garder workspace.ext4 après suppression")
-	fs.Parse(args)
-	if fs.NArg() == 0 {
+	rest, err := parseArgs(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(rest) == 0 {
 		return fmt.Errorf("id requis")
 	}
-	path := "/v1/workspaces/" + fs.Arg(0)
+	path := "/v1/workspaces/" + rest[0]
 	if *keepData {
 		path += "?keep_data=1"
 	}
