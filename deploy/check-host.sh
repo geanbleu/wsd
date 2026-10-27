@@ -46,6 +46,9 @@ if command -v firecracker >/dev/null 2>&1; then
 fi
 
 # Filesystem reflink (/var/lib/wsd et /srv/jailer)
+# Le seul test qui compte est un FICLONE réel : XFS n'expose pas reflink dans
+# les options de montage (c'est un flag de mkfs), et d'autres filesystems que
+# XFS et btrfs peuvent le supporter.
 check_reflink() {
     local dir="$1"
     local target="$dir"
@@ -54,22 +57,42 @@ check_reflink() {
         [ "$target" = "/" ] && { echo "KO:aucun ancêtre trouvé pour $dir"; return; }
     done
     local fstype
-    fstype=$(stat -f -c %T "$target" 2>/dev/null || echo "unknown")
+    fstype=$(stat -f -c %T "$target" 2>/dev/null || echo unknown)
+
+    # Test direct : cloner un fichier dans le répertoire cible.
+    if [ -w "$target" ] && cp --help 2>/dev/null | grep -q -- --reflink; then
+        local probe
+        if probe=$(mktemp -p "$target" .wsd-reflink-XXXXXX 2>/dev/null); then
+            head -c 4096 /dev/urandom > "$probe" 2>/dev/null || true
+            if cp --reflink=always "$probe" "$probe.clone" 2>/dev/null; then
+                rm -f "$probe" "$probe.clone"
+                echo "ok (FICLONE testé sur $fstype, $target)"
+            else
+                rm -f "$probe" "$probe.clone"
+                echo "KO:FICLONE refusé par $fstype sur $target (besoin xfs -m reflink=1 ou btrfs — voir deploy/setup-storage.sh)"
+            fi
+            return
+        fi
+    fi
+
+    # Repli quand le répertoire n'est pas inscriptible (script lancé sans droits).
     case "$fstype" in
         xfs)
-            local opts
-            opts=$(findmnt -n -o OPTIONS --target "$target" 2>/dev/null || echo "")
-            if echo "$opts" | grep -q "reflink=1"; then
-                echo "ok (xfs+reflink, ancêtre: $target)"
+            # xfs_info demande le point de montage, pas un sous-répertoire.
+            local mp
+            mp=$(findmnt -n -o TARGET --target "$target" 2>/dev/null || echo "")
+            if [ -n "$mp" ] && command -v xfs_info >/dev/null 2>&1 \
+               && xfs_info "$mp" 2>/dev/null | grep -q "reflink=1"; then
+                echo "ok (xfs reflink=1 d'après xfs_info sur $mp, non testé : $target non inscriptible)"
             else
-                echo "KO:xfs sans reflink=1 (formatter avec mkfs.xfs -m reflink=1)"
+                echo "KO:xfs sans reflink=1, ou xfs_info indisponible (reformatter avec mkfs.xfs -m reflink=1)"
             fi
             ;;
         btrfs)
-            echo "ok (btrfs, ancêtre: $target)"
+            echo "ok (btrfs, non testé : $target non inscriptible)"
             ;;
         *)
-            echo "KO:filesystem '$fstype' non supporté (besoin xfs+reflink=1 ou btrfs)"
+            echo "KO:filesystem '$fstype' sans support FICLONE (besoin xfs+reflink=1 ou btrfs)"
             ;;
     esac
 }
