@@ -31,7 +31,7 @@ else
 fi
 
 # Binaires requis
-for bin in ip nft firecracker jailer; do
+for bin in ip nft sysctl firecracker jailer; do
     if command -v "$bin" >/dev/null 2>&1; then
         ok "binaire $bin trouvé : $(command -v "$bin")"
     else

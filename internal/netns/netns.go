@@ -5,8 +5,8 @@ package netns
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"os/exec"
+	"strings"
 	"text/template"
 )
 
@@ -41,6 +41,11 @@ func Setup(id8, hostIP, nsIP, egressIface, dns string, egress []EgressRule) erro
 		func() error { return ipns(ns, "link", "set", "tap0", "up") },
 		func() error { return ipns(ns, "link", "set", "lo", "up") },
 		func() error { return ipns(ns, "route", "add", "default", "via", hostIP) },
+		// Le forwarding est un sysctl par netns, et un netns neuf le recopie
+		// depuis le netns initial du host, pas depuis son créateur. Il est donc
+		// réglé explicitement ici : sans lui, la chaîne forward ne voit rien
+		// passer et la VM n'a aucun accès réseau, sans erreur visible.
+		func() error { return setNetnsForwarding(ns) },
 		func() error {
 			return applyNft(id8, vn, dns, egress)
 		},
@@ -107,6 +112,11 @@ type EgressRule struct {
 var nftTmpl = template.Must(template.New("nft").Funcs(template.FuncMap{
 	"isCatchAll": func(cidr string) bool { return cidr == "" || cidr == "0.0.0.0/0" },
 }).Parse(`
+# La table est déclarée vide avant d'être vidée : « flush » sur une table
+# absente fait échouer tout le script (« Error: No such file or directory »),
+# et le netns est neuf à la première application. Déclarer puis vider rend le
+# script rejouable, ce dont un resume a besoin.
+table ip wsd-{{.ID}} { }
 flush table ip wsd-{{.ID}}
 
 table ip wsd-{{.ID}} {
@@ -153,6 +163,9 @@ type nftParams struct {
 }
 
 func applyNft(id8, vethNS, dns string, egress []EgressRule) error {
+	if dns == "" {
+		return fmt.Errorf("nft: net.dns est vide, les règles DNS seraient invalides")
+	}
 	var buf bytes.Buffer
 	if err := nftTmpl.Execute(&buf, nftParams{
 		ID:          id8,
@@ -165,19 +178,49 @@ func applyNft(id8, vethNS, dns string, egress []EgressRule) error {
 	// Run nft inside the netns
 	cmd := exec.Command("ip", "netns", "exec", NSName(id8), "nft", "-f", "-")
 	cmd.Stdin = &buf
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("nft apply: %w", err)
-	}
-	return nil
+	return run(cmd, "nft apply")
+}
+
+// setNetnsForwarding active le routage IPv4 à l'intérieur du netns.
+func setNetnsForwarding(ns string) error {
+	cmd := exec.Command("ip", "netns", "exec", ns,
+		"sysctl", "-q", "-w", "net.ipv4.ip_forward=1")
+	return run(cmd, "activation du forwarding dans "+ns)
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+// run exécute cmd en rapportant sa sortie d'erreur dans l'erreur retournée.
+// Sans cela, un échec de ip ou de nft ne remonte qu'un « exit status 1 »
+// jusqu'à l'API, et la vraie cause reste dans le journal du daemon.
+func run(cmd *exec.Cmd, what string) error {
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if msg := cleanOutput(stderr.String()); msg != "" {
+			return fmt.Errorf("%s: %w: %s", what, err, msg)
+		}
+		return fmt.Errorf("%s: %w", what, err)
+	}
+	return nil
+}
+
+// cleanOutput met la sortie d'erreur sur une seule ligne lisible : les lignes
+// de soulignement « ^^^^ » de nft n'ont aucun sens hors de leur contexte.
+func cleanOutput(out string) string {
+	var parts []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.Trim(line, "^") == "" {
+			continue
+		}
+		parts = append(parts, line)
+	}
+	return strings.Join(parts, " | ")
+}
+
 func ip(args ...string) error {
-	cmd := exec.Command("ip", args...)
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	return run(exec.Command("ip", args...), "ip "+strings.Join(args, " "))
 }
 
 func ipns(ns string, args ...string) error {
@@ -188,6 +231,5 @@ func ipns(ns string, args ...string) error {
 func nft(script string) error {
 	cmd := exec.Command("nft", "-f", "-")
 	cmd.Stdin = bytes.NewBufferString(script)
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	return run(cmd, "nft")
 }

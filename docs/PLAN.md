@@ -125,6 +125,18 @@ Relevées pendant la phase 8, à traiter avant toute mise en service.
    Corrigé : `ip_allocations.workspace_id` n'a plus de contrainte
    `REFERENCES workspaces(id)`, la construction d'un golden allouant un /30
    temporaire sans ligne dans `workspaces`. Migration 1 du schéma.
+0b. ~~**`netns setup: nft apply: exit status 1` à chaque création.**~~
+   Corrigé : le script nft commençait par `flush table`, ce qui échoue dans le
+   netns neuf d'un workspace, où la table n'existe pas encore. La table est
+   maintenant déclarée vide avant d'être vidée. Le forwarding IPv4 est aussi
+   réglé explicitement dans le netns, et les erreurs de `ip` et `nft` portent
+   désormais leur sortie — un `exit status 1` nu ne disait rien.
+1b. **Le masquerade host n'est jamais installé.** `netns.SetupHostMasquerade`
+   existe mais n'a aucun appelant : la règle de masquerade de `net.pool` vers
+   `net.egress_iface` exigée par SPEC §6 n'est donc pas posée, et les VM ne
+   joignent rien au-delà de leur veth. À câbler au démarrage de wsd, ou à
+   confier à une table nft gérée hors wsd (cf. docs/OPS.md § Dépannage) —
+   c'est un choix d'exploitation, wsd touchant alors au pare-feu du host.
 1. **Les VM sont tuées à la fin de la requête HTTP.** `internal/fc.Launch`
    lance jailer avec `exec.CommandContext(ctx, ...)` et reçoit le contexte de la
    requête (`r.Context()` dans `createWorkspace`, `resumeWorkspace`,
@@ -134,10 +146,10 @@ Relevées pendant la phase 8, à traiter avant toute mise en service.
    (contexte propre au workspace, annulé seulement par suspend/delete).
    `wsctl golden build` n'est pas concerné : il prend son snapshot et tue la VM
    lui-même avant que le handler ne retourne.
-2. **`net.dns` et `net.egress_iface` ne sont pas validés.** Vides, ils
-   produisent des règles `nft` invalides : l'échec apparaît à la première
-   création de workspace, pas au démarrage de wsd. À ajouter dans
-   `config.validate()`.
+2. **`net.egress_iface` n'est pas validé** et n'est utilisé que par
+   `Teardown` : son nom n'est vérifié à aucun moment. `net.dns` est désormais
+   refusé explicitement s'il est vide, mais au moment de la création, pas au
+   démarrage de wsd. Les deux devraient être validés dans `config.validate()`.
 3. **`wsctl token` produit un lien en `http://`** sans tenir compte de
    `external_scheme` de wsproxy. Derrière un terminateur TLS, le lien doit être
    corrigé à la main.

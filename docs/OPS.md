@@ -412,4 +412,5 @@ sqlite3 /var/lib/wsd/wsd.db "DELETE FROM goldens WHERE id='<ancien-id>'"
 | OIDC auth échoue | `journalctl -u wsproxy -n 50` ; vérifier `redirect_uri` enregistrée côté provider |
 | wsproxy ne joint pas wsd | `ls -l /run/wsd/wsd.sock` (attendu `srw-rw---- root wsd`), `id wsproxy` (doit être dans `wsd`), `socket_group` dans `wsd.json` |
 | 404 « workspace introuvable » | le `Host` doit être `<id>.ws.<domain>` et `domain` identique dans les deux configs, sans préfixe `ws.` |
+| La VM ne joint rien (ni DNS, ni registre) | le masquerade host n'est pas posé par wsd : `nft list table ip wsd-host`. Le poser à la main (en adaptant `net.pool` et `net.egress_iface`) :<br>`nft -f - <<<'table ip wsd-host { chain postrouting { type nat hook postrouting priority srcnat; ip saddr 10.200.0.0/16 oif eth0 masquerade } }'`<br>Vérifier aussi l'`egress.allow` de `wsd.json`, et que le registre npm y est si opencode est activé. |
 | Pool IP épuisé | `sqlite3 /var/lib/wsd/wsd.db "SELECT count(*) FROM ip_allocations"` ; supprimer des workspaces |
