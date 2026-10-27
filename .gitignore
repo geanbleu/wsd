@@ -2,3 +2,4 @@ bin/
 build/
 *.ext4
 vmlinux
+dist/
