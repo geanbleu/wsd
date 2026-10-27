@@ -13,9 +13,13 @@ CREATE TABLE IF NOT EXISTS workspaces (
     last_activity INTEGER NOT NULL
 );
 
+-- workspace_id n'a volontairement pas de contrainte REFERENCES : la
+-- construction d'un golden alloue un /30 temporaire qui n'appartient à aucun
+-- workspace (cf. migration 1). L'unicité de block_idx est la seule invariante
+-- qui compte ; la libération est faite par ReleaseIP.
 CREATE TABLE IF NOT EXISTS ip_allocations (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    workspace_id  TEXT NOT NULL REFERENCES workspaces(id),
+    workspace_id  TEXT NOT NULL,
     block_idx     INTEGER NOT NULL UNIQUE,
     host_ip       TEXT NOT NULL,
     ns_ip         TEXT NOT NULL

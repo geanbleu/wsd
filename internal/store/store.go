@@ -85,11 +85,125 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("store open %s: %w", path, err)
 	}
 	db.SetMaxOpenConns(1) // SQLite WAL: single writer
+
+	fresh, err := isFresh(db)
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
 	if _, err := db.Exec(schemaSQL); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("store schema: %w", err)
 	}
+	if fresh {
+		// schema.sql porte déjà l'état final : rien à migrer.
+		if err := setUserVersion(db, len(migrations)); err != nil {
+			db.Close()
+			return nil, err
+		}
+	} else if err := migrate(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
+}
+
+// migrations transforment un schéma existant. L'indice + 1 est la version
+// produite, suivie dans PRAGMA user_version. Ne jamais réordonner ni modifier
+// une entrée déjà publiée : seulement en ajouter.
+var migrations = []struct {
+	name  string
+	stmts []string
+}{
+	{
+		// La contrainte FOREIGN KEY sur ip_allocations.workspace_id faisait
+		// échouer « wsctl golden build » : il alloue un /30 temporaire pour son
+		// netns, sans ligne dans workspaces. SQLite ne sait pas retirer une
+		// contrainte, la table est donc reconstruite.
+		name: "ip_allocations sans contrainte FOREIGN KEY",
+		stmts: []string{
+			`CREATE TABLE ip_allocations_new (
+				id            INTEGER PRIMARY KEY AUTOINCREMENT,
+				workspace_id  TEXT NOT NULL,
+				block_idx     INTEGER NOT NULL UNIQUE,
+				host_ip       TEXT NOT NULL,
+				ns_ip         TEXT NOT NULL
+			)`,
+			`INSERT INTO ip_allocations_new (id,workspace_id,block_idx,host_ip,ns_ip)
+				SELECT id,workspace_id,block_idx,host_ip,ns_ip FROM ip_allocations`,
+			`DROP TABLE ip_allocations`,
+			`ALTER TABLE ip_allocations_new RENAME TO ip_allocations`,
+		},
+	},
+}
+
+// isFresh indique que la base ne contient encore aucune table applicative.
+func isFresh(db *sql.DB) (bool, error) {
+	var n int
+	err := db.QueryRow(
+		`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='workspaces'`).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("store: inspection du schéma: %w", err)
+	}
+	return n == 0, nil
+}
+
+func setUserVersion(db *sql.DB, v int) error {
+	// PRAGMA n'accepte pas de paramètre lié.
+	if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, v)); err != nil {
+		return fmt.Errorf("store: écriture user_version: %w", err)
+	}
+	return nil
+}
+
+// migrate applique les migrations manquantes, chacune dans sa transaction.
+func migrate(db *sql.DB) error {
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("store: lecture user_version: %w", err)
+	}
+	if version >= len(migrations) {
+		return nil
+	}
+
+	// Une reconstruction de table demande les FK désactivées, et un PRAGMA
+	// foreign_keys est sans effet à l'intérieur d'une transaction.
+	if _, err := db.Exec(`PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("store: désactivation des FK: %w", err)
+	}
+	defer db.Exec(`PRAGMA foreign_keys = ON`)
+
+	for i := version; i < len(migrations); i++ {
+		m := migrations[i]
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("store: migration %d (%s): %w", i+1, m.name, err)
+		}
+		for _, stmt := range m.stmts {
+			if _, err := tx.Exec(stmt); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("store: migration %d (%s): %w", i+1, m.name, err)
+			}
+		}
+		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, i+1)); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("store: migration %d (%s): user_version: %w", i+1, m.name, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("store: migration %d (%s): commit: %w", i+1, m.name, err)
+		}
+	}
+
+	// Les contraintes restantes doivent toujours tenir après reconstruction.
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		return fmt.Errorf("store: foreign_key_check: %w", err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return errors.New("store: foreign_key_check signale des violations après migration")
+	}
+	return nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }

@@ -121,6 +121,10 @@ Chaque phase est livrable seule. On ne passe à la suivante que lorsque les crit
 
 Relevées pendant la phase 8, à traiter avant toute mise en service.
 
+0. ~~**`wsctl golden build` échouait sur une contrainte FOREIGN KEY.**~~
+   Corrigé : `ip_allocations.workspace_id` n'a plus de contrainte
+   `REFERENCES workspaces(id)`, la construction d'un golden allouant un /30
+   temporaire sans ligne dans `workspaces`. Migration 1 du schéma.
 1. **Les VM sont tuées à la fin de la requête HTTP.** `internal/fc.Launch`
    lance jailer avec `exec.CommandContext(ctx, ...)` et reçoit le contexte de la
    requête (`r.Context()` dans `createWorkspace`, `resumeWorkspace`,
@@ -128,6 +132,8 @@ Relevées pendant la phase 8, à traiter avant toute mise en service.
    tue le process jailer/firecracker. Un workspace créé meurt donc juste après
    la réponse. Correctif : détacher le lancement du contexte de requête
    (contexte propre au workspace, annulé seulement par suspend/delete).
+   `wsctl golden build` n'est pas concerné : il prend son snapshot et tue la VM
+   lui-même avant que le handler ne retourne.
 2. **`net.dns` et `net.egress_iface` ne sont pas validés.** Vides, ils
    produisent des règles `nft` invalides : l'échec apparaît à la première
    création de workspace, pas au démarrage de wsd. À ajouter dans

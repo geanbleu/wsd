@@ -244,7 +244,21 @@ systemctl restart wsd wsproxy
 
 Les workspaces en cours ne sont pas interrompus : `wsd.service` est en
 `KillMode=process`, les firecracker tournent dans leurs propres cgroups, et wsd
-réconcilie son état au redémarrage. Vérifier ce qui tourne :
+réconcilie son état au redémarrage.
+
+Le schéma de `wsd.db` est migré automatiquement au démarrage de wsd, dans une
+transaction par migration ; la version appliquée est suivie dans
+`PRAGMA user_version`. Sauvegarder la base avant une montée de version reste la
+précaution d'usage :
+
+```bash
+systemctl stop wsd
+cp /var/lib/wsd/wsd.db /var/lib/wsd/wsd.db.bak
+# puis installer et redémarrer
+sqlite3 /var/lib/wsd/wsd.db "PRAGMA user_version"   # version après migration
+```
+
+Vérifier ce qui tourne :
 
 ```bash
 wsd -version && wsproxy -version && wsctl -version
