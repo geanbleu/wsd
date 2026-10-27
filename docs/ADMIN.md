@@ -586,6 +586,7 @@ causes :
 |---|---|---|
 | `no such file or directory` sur `v.sock` | Firecracker n'a pas créé le socket vsock | `firecracker.log` ; vérifier que `PUT /vsock` a bien été accepté |
 | `connection refused` au handshake | l'invité tourne, mais rien n'écoute sur le port 1024 | `console.log` : wsagent a-t-il démarré ? |
+| `ping recv: EOF` | le handshake a réussi, donc l'agent écoute, mais il ferme la connexion sans répondre | l'agent de l'image est trop ancien ou défaillant : journal de `wsagent.service` dans l'invité, et reconstruire l'image (`make image`) puis le golden |
 | rien dans la console | l'invité ne démarre pas du tout | noyau sans virtio en dur, rootfs illisible, mauvais `image_id` |
 
 ```bash

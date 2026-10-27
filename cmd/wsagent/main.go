@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
-	"net"
 	"os"
 	"os/exec"
 	"os/user"
@@ -74,15 +74,20 @@ func serveOnce(log *slog.Logger) error {
 }
 
 func handleConn(log *slog.Logger, fd int) {
-	f := os.NewFile(uintptr(fd), "vsock")
-	conn, err := net.FileConn(f)
-	f.Close()
-	if err != nil {
-		log.Error("FileConn", "err", err)
-		return
-	}
+	// net.FileConn ne sait pas envelopper un descripteur AF_VSOCK : son
+	// getsockname renvoie EAFNOSUPPORT, et la famille n'est pas reconnue. Le
+	// descripteur se lit et s'écrit pourtant comme n'importe quel fichier, et
+	// os.NewFile le confie au runtime pour que les lectures ne bloquent qu'une
+	// goroutine. Ne pas réintroduire net.FileConn ici : la connexion serait
+	// fermée aussitôt acceptée, et le host verrait un EOF sur sa requête.
+	conn := os.NewFile(uintptr(fd), "vsock")
 	defer conn.Close()
+	serveConn(log, conn)
+}
 
+// serveConn traite les requêtes d'une connexion déjà établie. Séparé de
+// handleConn pour être testable sans vsock.
+func serveConn(log *slog.Logger, conn io.ReadWriter) {
 	dec := json.NewDecoder(bufio.NewReader(conn))
 	enc := json.NewEncoder(conn)
 
