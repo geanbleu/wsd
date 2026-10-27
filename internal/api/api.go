@@ -10,9 +10,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -298,7 +298,7 @@ func (h *Handler) coldBoot(ctx context.Context, wsID, id8, nsName, wsDisk string
 	if err := callPostRestore(ctx, res.VsockPath, wsID, false, []string{"code-server.service"}, ocFiles); err != nil {
 		return fmt.Errorf("post_restore: %w", err)
 	}
-	if err := waitCodeServer(ctx, nsName, alloc.NSIP); err != nil {
+	if err := waitCodeServer(ctx, upstreamFor(alloc.NSIP), codeServerTimeout); err != nil {
 		return fmt.Errorf("code-server: %w", err)
 	}
 
@@ -377,7 +377,7 @@ func (h *Handler) bootFromGolden(ctx context.Context, wsID, id8, nsName, wsDisk 
 	if err := callPostRestore(ctx, res.VsockPath, wsID, true, []string{"code-server.service"}, ocFiles); err != nil {
 		return fmt.Errorf("post_restore: %w", err)
 	}
-	if err := waitCodeServer(ctx, nsName, alloc.NSIP); err != nil {
+	if err := waitCodeServer(ctx, upstreamFor(alloc.NSIP), codeServerTimeout); err != nil {
 		return fmt.Errorf("code-server: %w", err)
 	}
 
@@ -417,7 +417,7 @@ func (h *Handler) ensureWorkspace(w http.ResponseWriter, r *http.Request) {
 				writeErr(w, http.StatusInternalServerError, "allocation IP introuvable")
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]string{"upstream": alloc.NSIP + ":8080"})
+			writeJSON(w, http.StatusOK, map[string]string{"upstream": upstreamFor(alloc.NSIP)})
 			return
 		}
 		if ws.State == store.StateCreating || ws.State == store.StateResuming {
@@ -686,7 +686,7 @@ func (h *Handler) doResume(wsID string) error {
 	if err := callPostRestore(ctx, res.VsockPath, wsID, false, nil, ocFiles); err != nil {
 		log.Warn("post_restore resume", "err", err)
 	}
-	if err := waitCodeServer(ctx, nsName, alloc.NSIP); err != nil {
+	if err := waitCodeServer(ctx, upstreamFor(alloc.NSIP), codeServerTimeout); err != nil {
 		h.Store.MarkError(wsID)
 		return fmt.Errorf("code-server: %w", err)
 	}
@@ -884,7 +884,7 @@ func (h *Handler) buildGolden(ctx context.Context) error {
 	if err := callPostRestore(ctx, res.VsockPath, tmpID, false, []string{"code-server.service"}, nil); err != nil {
 		return fmt.Errorf("post_restore golden: %w", err)
 	}
-	if err := waitCodeServer(ctx, nsName, alloc.NSIP); err != nil {
+	if err := waitCodeServer(ctx, upstreamFor(alloc.NSIP), codeServerTimeout); err != nil {
 		return fmt.Errorf("code-server golden: %w", err)
 	}
 	log.Info("code-server golden prêt, préparation snapshot...")
@@ -1201,25 +1201,68 @@ func callPostRestore(ctx context.Context, vsockPath, wsID string, mountWorkspace
 	return nil
 }
 
-func waitCodeServer(ctx context.Context, nsName, nsIP string) error {
-	deadline := time.Now().Add(30 * time.Second)
+// waitCodeServer attend que code-server réponde, depuis le host et à travers
+// le DNAT du netns : c'est exactement le chemin que wsproxy empruntera, donc
+// le contrôle valide d'un coup la VM, le routage et les règles nft.
+//
+// Le sondage se fait sur /healthz, que code-server exclut explicitement de son
+// heartbeat (src/node/routes/index.ts) : le contrôle ne maintient donc pas
+// l'instance artificiellement active. Toute réponse HTTP sous 500 vaut prête —
+// un 404 sur une version sans /healthz prouve déjà que le serveur répond.
+// codeServerPort est le port d'écoute de code-server dans l'invité, fixé par
+// l'unité systemd de l'image (--bind-addr 0.0.0.0:8080) et par la règle DNAT
+// du netns.
+const codeServerPort = 8080
+
+// codeServerTimeout borne l'attente de code-server après un restore.
+const codeServerTimeout = 30 * time.Second
+
+// upstreamFor renvoie l'adresse par laquelle le host joint code-server d'un
+// workspace : l'IP du netns côté veth, que le DNAT redirige vers l'invité.
+func upstreamFor(nsIP string) string {
+	return net.JoinHostPort(nsIP, strconv.Itoa(codeServerPort))
+}
+
+func waitCodeServer(ctx context.Context, upstream string, timeout time.Duration) error {
+	url := "http://" + upstream + "/healthz"
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	var lastErr error
+	lastStatus := 0
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
-		out, _ := exec.CommandContext(ctx, "ip", "netns", "exec", nsName,
-			"curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
-			"--max-time", "2",
-			fmt.Sprintf("http://%s:8080/", nsIP)).Output()
-		code := strings.TrimSpace(string(out))
-		if code == "200" || code == "302" {
-			return nil
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+		} else {
+			resp.Body.Close()
+			lastStatus = resp.StatusCode
+			if resp.StatusCode < 500 {
+				return nil
+			}
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	return fmt.Errorf("code-server non disponible après 30 s")
+
+	switch {
+	case lastStatus != 0:
+		return fmt.Errorf("code-server non disponible après %s : %s répond HTTP %d",
+			timeout, upstream, lastStatus)
+	case lastErr != nil:
+		return fmt.Errorf("code-server non disponible après %s sur %s : %w",
+			timeout, upstream, lastErr)
+	default:
+		return fmt.Errorf("code-server non disponible après %s sur %s", timeout, upstream)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

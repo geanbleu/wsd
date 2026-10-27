@@ -605,6 +605,29 @@ contenant `nomodule` et l'invité n'ayant pas d'initramfs. `make kernel`
 vérifie ce point depuis la correction du script, mais un `vmlinux` construit
 avant ne l'a pas été : le reconstruire lève le doute.
 
+### `code-server non disponible après 30 s`
+
+L'agent a répondu, donc l'invité tourne : il reste à savoir si code-server ne
+sert pas, ou si le chemin réseau du host vers la VM est cassé. L'erreur nomme
+l'adresse sondée et la cause réseau. Deux commandes les séparent :
+
+```bash
+# le chemin complet, celui que wsproxy utilisera : host → veth → DNAT → invité
+curl -v http://<ip-veth-netns>:8080/healthz
+
+# en court-circuitant le DNAT, directement sur l'invité depuis le netns
+sudo ip netns exec ws-<id8> curl -v http://172.16.0.2:8080/healthz
+```
+
+| Première | Seconde | Conclusion |
+|---|---|---|
+| échoue | répond | code-server va bien, le DNAT ou le forwarding du netns est en cause : `ip netns exec ws-<id8> nft list ruleset` |
+| échoue | échoue | code-server ne sert pas : `console.log`, et l'état de `code-server.service` dans l'invité |
+| répond | — | c'était transitoire : code-server a mis plus de 30 s à démarrer |
+
+`wsctl get <id>` donne l'IP à utiliser dans la première commande, et les huit
+premiers caractères de l'id donnent le nom du netns.
+
 ### La VM tourne mais ne joint rien
 
 ```bash

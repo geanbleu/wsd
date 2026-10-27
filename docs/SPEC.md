@@ -152,7 +152,7 @@ Firecracker est lancé dans le netns via l'option netns de jailer.
 
 1. Préparer un chroot et un netns temporaires.
 2. Boot à froid.
-3. Attendre que l'agent réponde `ready` en vsock, puis que `GET http://<veth>:8080/healthz` de code-server réponde (vérifier l'endpoint de santé de la version).
+3. Attendre que l'agent réponde `ready` en vsock, puis que `GET http://<ip veth netns>:8080/healthz` de code-server réponde. Le sondage se fait **depuis le host**, à travers le DNAT du netns : c'est le chemin qu'empruntera wsproxy, donc le contrôle valide d'un coup la VM, le routage et les règles nft. `/healthz` est exclu du heartbeat de code-server (vérifié en 4.123.0), le contrôle ne maintient donc pas l'instance artificiellement active ; toute réponse sous 500 vaut prête, un 404 sur une version sans `/healthz` prouvant déjà que le serveur répond.
 4. `PATCH /vm {"state":"Paused"}`.
 5. `PUT /snapshot/create` (Full) vers `vmstate` et `mem`.
 6. Kill, puis déplacer dans `golden/<golden-id>/`. Le golden actif est marqué dans SQLite.
