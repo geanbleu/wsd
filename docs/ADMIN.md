@@ -296,6 +296,12 @@ Ne jamais supprimer le répertoire d'un golden encore référencé par un worksp
 suspendu : son resume échouerait. Et ne **jamais** modifier un fichier `mem` de
 golden en place — c'est l'inode partagé par tous les clones.
 
+Les fichiers d'un golden doivent rester `root:root` en 0644 : ils sont
+hardlinkés dans le chroot de chaque VM clonée, qui tourne sous un uid dédié, et
+un `mem` qui ne serait plus lisible par tous ferait échouer les restores avec
+`Permission denied`. wsd les normalise à la construction ; ne pas les chown
+après coup.
+
 ---
 
 ## Sauvegarde et restauration
@@ -316,7 +322,11 @@ Le plus propre est un snapshot au niveau du filesystem (LVM, ou `btrfs send` si
 le stockage est en btrfs) : il est cohérent et n'interrompt rien.
 
 À défaut, par workspace, **sur un workspace suspendu** — copier un
-`workspace.ext4` monté dans une VM vivante donne un filesystem incohérent :
+`workspace.ext4` monté dans une VM vivante donne un filesystem incohérent.
+Noter que ce fichier appartient à l'uid jailé de sa VM, pas à root : la
+sauvegarde et la restauration se font donc en root, et une restauration doit
+préserver ou rétablir ce propriétaire (wsd le repose de toute façon au
+démarrage suivant de la VM).
 
 ```bash
 wsctl suspend <id>

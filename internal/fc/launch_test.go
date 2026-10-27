@@ -59,3 +59,61 @@ func TestCheckSourcesCompletes(t *testing.T) {
 		t.Errorf("un mem demandé mais absent doit être signalé, obtenu : %v", err)
 	}
 }
+
+// TestSetChrootPermissions : jailer ne chown que ses répertoires, pas les
+// fichiers que wsd place dans le chroot. Sans ces droits, Firecracker échoue
+// sur « Permission denied (os error 13) /rootfs.ext4 » à la configuration du
+// drive, qui est en lecture-écriture.
+//
+// Le test utilise l'uid courant : chown vers son propre uid est permis sans
+// privilège, ce qui rend le test exécutable par `make test`.
+func TestSetChrootPermissions(t *testing.T) {
+	chroot := t.TempDir()
+	uid, gid := os.Getuid(), os.Getgid()
+
+	for _, name := range []string{"rootfs.ext4", "workspace.ext4", "vmlinux", "mem", "vmstate"} {
+		if err := os.WriteFile(filepath.Join(chroot, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := setChrootPermissions(chroot, uid, gid, true); err != nil {
+		t.Fatalf("setChrootPermissions: %v", err)
+	}
+
+	// Les drives en lecture-écriture doivent appartenir à l'uid de la VM.
+	for _, name := range []string{"rootfs.ext4", "workspace.ext4"} {
+		fi, err := os.Stat(filepath.Join(chroot, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := fi.Mode().Perm(); got != 0o600 {
+			t.Errorf("%s : mode %04o, attendu 0600", name, got)
+		}
+	}
+
+	// Les fichiers partagés doivent rester lisibles par n'importe quel uid.
+	for _, name := range []string{"vmlinux", "mem", "vmstate"} {
+		fi, err := os.Stat(filepath.Join(chroot, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := fi.Mode().Perm(); got != 0o644 {
+			t.Errorf("%s : mode %04o, attendu 0644 (lisible par l'uid jailé)", name, got)
+		}
+	}
+}
+
+// TestSetChrootPermissionsBootAFroid : au boot à froid il n'y a ni mem ni
+// vmstate, leur absence ne doit pas faire échouer l'étape.
+func TestSetChrootPermissionsBootAFroid(t *testing.T) {
+	chroot := t.TempDir()
+	for _, name := range []string{"rootfs.ext4", "workspace.ext4", "vmlinux"} {
+		if err := os.WriteFile(filepath.Join(chroot, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := setChrootPermissions(chroot, os.Getuid(), os.Getgid(), false); err != nil {
+		t.Fatalf("setChrootPermissions sans snapshot: %v", err)
+	}
+}

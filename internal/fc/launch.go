@@ -87,6 +87,10 @@ func Launch(ctx context.Context, p LaunchParams) (*LaunchResult, error) {
 		}
 	}
 
+	if err := setChrootPermissions(chroot, p.UID, p.GID, p.MemSrc != ""); err != nil {
+		return nil, err
+	}
+
 	// ── lancer jailer ─────────────────────────────────────────────────────────
 	// --cgroup-version 2 est obligatoire (défaut jailer = 1)
 	memMax := strconv.Itoa((p.MemMiB + 256) * 1024 * 1024)
@@ -134,6 +138,50 @@ func Launch(ctx context.Context, p LaunchParams) (*LaunchResult, error) {
 		VsockPath:  vsockPath,
 		ChromeRoot: chroot,
 	}, nil
+}
+
+// setChrootPermissions rend les ressources du chroot accessibles à l'uid sous
+// lequel jailer exécute Firecracker.
+//
+// jailer ne chown que les répertoires de sa hiérarchie (« / », « /dev »,
+// « /dev/net », « /run ») et pas récursivement : les fichiers que nous plaçons
+// dans le chroot gardent leur propriétaire. docs/jailer.md est explicite,
+// c'est à l'appelant de s'en occuper : « permissions must be properly managed
+// for these resources; for example the user which Firecracker runs as must
+// have both read and write permissions to the backing file for a RW block
+// device ».
+//
+// Les deux drives sont en lecture-écriture, et leurs fichiers sont privés à
+// cette VM — copie reflink pour le rootfs, fichier du workspace pour l'autre :
+// ils peuvent donc appartenir à l'uid de la VM.
+//
+// vmlinux, mem et vmstate sont au contraire des hardlinks vers des inodes
+// partagés : l'image pour le premier, le golden pour les deux autres. Les
+// chown reviendrait à les prendre aux autres VM, et le fichier mem du golden
+// est précisément ce qui est mutualisé en page cache entre tous les clones.
+// Firecracker les ouvre en lecture seule au restore (File::open dans
+// vmm/src/persist.rs), un mode lisible par tous suffit.
+func setChrootPermissions(chroot string, uid, gid int, fromSnapshot bool) error {
+	for _, name := range []string{"rootfs.ext4", "workspace.ext4"} {
+		path := filepath.Join(chroot, name)
+		if err := os.Chown(path, uid, gid); err != nil {
+			return fmt.Errorf("chown %s vers %d:%d: %w", name, uid, gid, err)
+		}
+		if err := os.Chmod(path, 0o600); err != nil {
+			return fmt.Errorf("chmod %s: %w", name, err)
+		}
+	}
+
+	shared := []string{"vmlinux"}
+	if fromSnapshot {
+		shared = append(shared, "mem", "vmstate")
+	}
+	for _, name := range shared {
+		if err := os.Chmod(filepath.Join(chroot, name), 0o644); err != nil {
+			return fmt.Errorf("chmod %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // checkSources vérifie que les fichiers à lier dans le chroot existent.

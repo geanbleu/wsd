@@ -96,6 +96,20 @@ Arborescence host :
 
 Cette identité rend tous les snapshots restaurables dans n'importe quel chroot sans réécriture de chemin. Si la version de Firecracker permet de surcharger les chemins au load, on garde quand même ce schéma par simplicité.
 
+**Propriété des fichiers du chroot.** jailer ne change le propriétaire que des
+répertoires de sa hiérarchie (`/`, `/dev`, `/dev/net`, `/run`), et pas
+récursivement : les ressources placées dans le chroot gardent la leur, et c'est
+à wsd de les rendre accessibles à l'uid jailé. Les deux drives sont en
+lecture-écriture et privés à la VM (`rootfs.ext4` est une copie reflink,
+`workspace.ext4` un hardlink vers le fichier du workspace) : ils sont donc
+donnés à l'uid de la VM, en 0600. `vmlinux`, `mem` et `vmstate` sont au
+contraire des hardlinks vers des inodes partagés — l'image et le golden — et
+ne doivent jamais changer de propriétaire : Firecracker les ouvre en lecture
+seule au restore, ils restent à root en 0644. Les fichiers de snapshot
+produits par Firecracker sortent du chroot avec l'uid jailé et un mode 0600 :
+wsd les remet à root en 0644 avant de les publier dans `golden/` ou
+`suspend/`, sans quoi aucun autre uid ne pourrait les lire.
+
 **Partage mémoire.** Au restore, le fichier `mem` du golden est chargé avec le backend `File`, donc mappé en privé. Le hardlink garantit le même inode : les pages non modifiées sont partagées en page cache entre toutes les VM clonées du même golden. Le fichier golden ne doit **jamais** être modifié en place.
 
 **Disque workspace.** Il a une taille fixe définie par la config (ex. 20 GiB, fichier sparse). Le golden est pris avec un `workspace-template.ext4` déjà formaté à cette même taille. À la création d'un workspace, `wsd` copie le template en reflink. La taille du bloc device est la même partout, donc aucun rescan n'est nécessaire. Le redimensionnement est hors v1.

@@ -560,6 +560,16 @@ func (h *Handler) doSuspend(wsID string, ws *store.Workspace) error {
 		}
 	}
 
+	// Même normalisation que pour un golden : les fichiers sortent du chroot
+	// avec le propriétaire et le mode que firecracker leur a donnés.
+	if err := normalizeSharedFiles(
+		filepath.Join(suspendDir, "vmstate"),
+		filepath.Join(suspendDir, "mem"),
+		filepath.Join(wsDir, "rootfs.ext4"),
+	); err != nil {
+		log.Warn("droits des fichiers de suspend", "err", err)
+	}
+
 	// 6. Supprimer le chroot (rootfs déjà déplacé)
 	if err := fc.DestroyChroot(cfg.JailerDir, wsID); err != nil {
 		log.Warn("destroy chroot suspend", "err", err)
@@ -943,6 +953,18 @@ func (h *Handler) buildGolden(ctx context.Context) error {
 		log.Warn("reflink workspace-template ignoré", "err", err)
 	}
 
+	// Firecracker a écrit vmstate et mem sous l'uid jailé de la construction.
+	// Les clones les hardlinkent dans leur chroot sous d'autres uid : sans
+	// cette normalisation, leur restore échouerait sur « Permission denied ».
+	if err := normalizeSharedFiles(
+		filepath.Join(goldenDir, "vmstate"),
+		filepath.Join(goldenDir, "mem"),
+		filepath.Join(goldenDir, "rootfs.ext4"),
+	); err != nil {
+		os.RemoveAll(goldenDir)
+		return fmt.Errorf("droits du golden: %w", err)
+	}
+
 	// 9. Enregistrer en base
 	if err := h.Store.CreateGolden(goldenID, cfg.ImageID, goldenDir); err != nil {
 		os.RemoveAll(goldenDir)
@@ -953,6 +975,23 @@ func (h *Handler) buildGolden(ctx context.Context) error {
 	}
 
 	log.Info("golden créé", "golden_id", goldenID, "dir", goldenDir)
+	return nil
+}
+
+// normalizeSharedFiles remet à root et en lecture pour tous les fichiers
+// produits par firecracker, qui les écrit sous son uid jailé et en 0600. Ils
+// sont ensuite hardlinkés dans le chroot d'autres VM, sous d'autres uid, et
+// ouverts en lecture seule : ils doivent rester lisibles sans appartenir à
+// l'une d'entre elles.
+func normalizeSharedFiles(paths ...string) error {
+	for _, path := range paths {
+		if err := os.Chown(path, 0, 0); err != nil {
+			return fmt.Errorf("chown %s: %w", path, err)
+		}
+		if err := os.Chmod(path, 0o644); err != nil {
+			return fmt.Errorf("chmod %s: %w", path, err)
+		}
+	}
 	return nil
 }
 
