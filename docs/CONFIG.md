@@ -42,7 +42,7 @@ donne `https://<id>.ws.example.internal`. La même valeur doit figurer dans
 | Champ | Défaut | Description |
 |---|---|---|
 | `data_dir` | **requis** | Racine des données : `images/`, `workspaces/`, `goldens/`, `wsd.db`. |
-| `jailer_dir` | **requis** | Base des chroots jailer. Doit être sur le **même filesystem** que `data_dir`, qui doit supporter `FICLONE` : XFS `reflink=1` ou btrfs. Préparation du stockage : [OPS.md § Stockage](OPS.md#stockage) et `deploy/setup-storage.sh`. |
+| `jailer_dir` | **requis** | Base des chroots jailer. Doit être sur le **même filesystem** que `data_dir`, qui doit supporter `FICLONE` : XFS `reflink=1` ou btrfs. Préparation du stockage : [INSTALL.md § Stockage](INSTALL.md#2-stockage) et `deploy/setup-storage.sh`. |
 | `firecracker_bin` | **requis** | Chemin du binaire firecracker. |
 | `jailer_bin` | **requis** | Chemin du binaire jailer. |
 | `socket_path` | `/run/wsd/wsd.sock` | Socket unix de l'API. Le répertoire est créé en 0750. |

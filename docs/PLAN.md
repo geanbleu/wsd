@@ -82,9 +82,9 @@ Chaque phase est livrable seule. On ne passe à la suivante que lorsque les crit
 - Auth OIDC dans wsproxy, contrôle `owner`.
 - `/v1/metrics`, `wsctl top`.
 - Unités systemd (`deploy/`), exemple `wsd.json`, procédure de mise à jour d'image : nouveau golden, les workspaces existants restent sur l'ancien jusqu'à leur prochaine recréation.
-- Doc d'exploitation `docs/OPS.md` : sauvegarde des `workspace.ext4`, nettoyage des orphelins, rotation des goldens.
+- Doc d'exploitation : sauvegarde des `workspace.ext4`, nettoyage des orphelins, rotation des goldens (`docs/ADMIN.md`).
 
-**Acceptation :** déploiement sur un host vierge en suivant uniquement `docs/OPS.md`.
+**Acceptation :** déploiement sur un host vierge en suivant uniquement `docs/INSTALL.md`.
 
 ## Phase 8 — Packaging et documentation
 
@@ -105,8 +105,11 @@ Chaque phase est livrable seule. On ne passe à la suivante que lorsque les crit
 - `make install`, `make uninstall`, `make dist` (archive host + `.sha256`),
   `make fmt`, `make help` ; version de build injectée par ldflags et flag
   `-version` sur les quatre binaires.
-- `docs/OPS.md` : installation réécrite autour de `install.sh`, mise à jour des
-  binaires, désinstallation.
+- `docs/INSTALL.md` : premier déploiement pas à pas, d'un host vierge au
+  premier workspace, avec une vérification par étape et un dépannage par étape.
+- `docs/ADMIN.md` : administration courante — cycle de vie, observabilité,
+  capacité, images et goldens, sauvegardes, nettoyage, playbooks d'incident,
+  routines. Remplace `docs/OPS.md`, découpé en ces deux guides.
 
 **Acceptation :**
 - `make build test lint dist` passe ;
@@ -115,7 +118,7 @@ Chaque phase est livrable seule. On ne passe à la suivante que lorsque les crit
   remet le répertoire dans l'état initial sans toucher aux données ;
 - `check-host.sh` rend OK sur un XFS `reflink=1` et KO sur un filesystem sans
   `FICLONE` (vérifié sur xfs et tmpfs) ;
-- déploiement sur un host vierge en suivant uniquement `docs/OPS.md`.
+- déploiement sur un host vierge en suivant uniquement `docs/INSTALL.md`.
 
 ## Anomalies ouvertes
 
@@ -135,7 +138,7 @@ Relevées pendant la phase 8, à traiter avant toute mise en service.
    existe mais n'a aucun appelant : la règle de masquerade de `net.pool` vers
    `net.egress_iface` exigée par SPEC §6 n'est donc pas posée, et les VM ne
    joignent rien au-delà de leur veth. À câbler au démarrage de wsd, ou à
-   confier à une table nft gérée hors wsd (cf. docs/OPS.md § Dépannage) —
+   confier à une table nft gérée hors wsd (cf. docs/INSTALL.md § Réseau du host) —
    c'est un choix d'exploitation, wsd touchant alors au pare-feu du host.
 1. **Les VM sont tuées à la fin de la requête HTTP.** `internal/fc.Launch`
    lance jailer avec `exec.CommandContext(ctx, ...)` et reçoit le contexte de la

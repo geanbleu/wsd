@@ -2,7 +2,7 @@
 
 Plateforme qui lance à la demande des microVMs Firecracker. Chacune contient code-server (VS Code web) et opencode comme harness d'agent. Un workspace inactif est suspendu sur disque, puis réveillé à la première requête. L'objectif est un nombre de workspaces limité par le disque, pas par la RAM.
 
-La spec complète est dans `docs/SPEC.md` et le plan par phases dans `docs/PLAN.md`. **Lis les deux avant toute tâche.** Travaille toujours dans le cadre d'une phase du plan. `README.md` donne la vue d'ensemble et `docs/CONFIG.md` la référence de configuration ; `docs/OPS.md` l'exploitation.
+La spec complète est dans `docs/SPEC.md` et le plan par phases dans `docs/PLAN.md`. **Lis les deux avant toute tâche.** Travaille toujours dans le cadre d'une phase du plan. `README.md` donne la vue d'ensemble, `docs/INSTALL.md` le premier déploiement, `docs/ADMIN.md` l'administration courante et `docs/CONFIG.md` la référence de configuration.
 
 ## Conventions
 

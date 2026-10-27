@@ -1,6 +1,6 @@
 [Unit]
 Description=wsproxy — reverse proxy HTTP/WebSocket pour les workspaces
-Documentation=file:/usr/share/doc/wsd/OPS.md
+Documentation=file:/usr/share/doc/wsd/ADMIN.md
 After=network-online.target wsd.service
 Wants=network-online.target
 Requires=wsd.service

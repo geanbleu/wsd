@@ -1,6 +1,6 @@
 [Unit]
 Description=wsd — workspace daemon Firecracker
-Documentation=file:/usr/share/doc/wsd/OPS.md
+Documentation=file:/usr/share/doc/wsd/ADMIN.md
 After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/dev/kvm

@@ -211,7 +211,7 @@ fi
 
 # ── 9. documentation ──────────────────────────────────────────────────────────
 step "Documentation"
-for d in README.md docs/SPEC.md docs/OPS.md docs/CONFIG.md; do
+for d in README.md docs/SPEC.md docs/INSTALL.md docs/ADMIN.md docs/CONFIG.md; do
     [ -f "$REPO_ROOT/$d" ] || continue
     run install -m 0644 "$REPO_ROOT/$d" "$DOC_DIR/$(basename "$d")"
 done
@@ -249,6 +249,6 @@ configuration doit d'abord être adaptée.
        wsctl create test-ws --owner vous@example.com
        wsctl token <id>
 
-Détails dans $DOC_DIR/OPS.md.
+Détails dans $DOC_DIR/INSTALL.md, exploitation dans $DOC_DIR/ADMIN.md.
 ──────────────────────────────────────────────────────────────────────
 EOF

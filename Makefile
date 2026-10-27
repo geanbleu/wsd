@@ -63,7 +63,8 @@ dist: build
 	@install -m 0644 deploy/*.json deploy/*.service deploy/versions.env \
 		deploy/sysctl-wsd.conf deploy/*.example $(DIST)/$(DISTNAME)/deploy/
 	@install -m 0644 README.md $(DIST)/$(DISTNAME)/
-	@install -m 0644 docs/SPEC.md docs/PLAN.md docs/OPS.md docs/CONFIG.md \
+	@install -m 0644 docs/SPEC.md docs/PLAN.md docs/INSTALL.md docs/ADMIN.md \
+		docs/CONFIG.md \
 		$(DIST)/$(DISTNAME)/docs/
 	@echo $(VERSION) > $(DIST)/$(DISTNAME)/VERSION
 	@tar -czf $(DIST)/$(DISTNAME).tar.gz -C $(DIST) $(DISTNAME)

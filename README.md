@@ -36,7 +36,7 @@ et au backend mémoire `File` de Firecracker.
   mutualisent le `mem` du golden entre les VM. ext4 ne sait pas faire de
   `FICLONE`. `deploy/setup-storage.sh` prépare ce stockage, sur un périphérique
   dédié ou dans une image XFS montée en loop ; voir
-  [Stockage](docs/OPS.md#stockage).
+  [Stockage](docs/INSTALL.md#2-stockage).
 - `iproute2`, `nftables`, `net.ipv4.ip_forward=1`.
 - Pour construire l'image invitée : `docker`, `e2fsprogs` ≥ 1.45 (`mkfs.ext4 -d`).
 - Pour construire le kernel invité : `make`, `gcc`, `bison`, `flex`, `bc`,
@@ -79,8 +79,9 @@ wsctl create mon-projet --owner moi@example.com
 wsctl token <id>                                    # lien d'accès à ouvrir
 ```
 
-La procédure complète, le dépannage et les opérations courantes sont dans
-[`docs/OPS.md`](docs/OPS.md).
+La procédure complète, avec une vérification et un dépannage par étape, est
+dans [`docs/INSTALL.md`](docs/INSTALL.md) ; les opérations courantes dans
+[`docs/ADMIN.md`](docs/ADMIN.md).
 
 ## Documentation
 
@@ -89,7 +90,8 @@ La procédure complète, le dépannage et les opérations courantes sont dans
 | [`docs/SPEC.md`](docs/SPEC.md) | spécification technique : réseau, disques, snapshots, protocole agent, sécurité |
 | [`docs/PLAN.md`](docs/PLAN.md) | plan par phases, critères d'acceptation, mesures relevées, limites connues |
 | [`docs/CONFIG.md`](docs/CONFIG.md) | référence de tous les champs de `wsd.json`, `wsproxy.json` et `versions.env` |
-| [`docs/OPS.md`](docs/OPS.md) | exploitation : installation, mise à jour d'image, sauvegarde, orphelins, dépannage |
+| [`docs/INSTALL.md`](docs/INSTALL.md) | premier déploiement : d'un host vierge au premier workspace, vérification et dépannage par étape |
+| [`docs/ADMIN.md`](docs/ADMIN.md) | administration courante : cycle de vie, observabilité, capacité, images et goldens, sauvegardes, nettoyage, incidents |
 | [`CLAUDE.md`](CLAUDE.md) | conventions de code et règles de travail du dépôt |
 
 ## Arborescence
