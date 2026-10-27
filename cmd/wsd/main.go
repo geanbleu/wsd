@@ -12,6 +12,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -47,6 +48,8 @@ func main() {
 	}
 	defer st.Close()
 
+	checkImage(log, cfg)
+
 	if err := reconcile(log, st); err != nil {
 		log.Warn("réconciliation", "err", err)
 	}
@@ -81,6 +84,32 @@ func main() {
 		log.Error("serve", "err", err)
 		os.Exit(1)
 	}
+}
+
+// checkImage signale au démarrage une image invitée absente ou incomplète.
+// Ce n'est pas fatal — l'image peut être déposée ensuite, sans redémarrer wsd —
+// mais le dire ici évite de le découvrir à la première création de workspace,
+// sous la forme d'une erreur de hardlink.
+func checkImage(log *slog.Logger, cfg *config.Config) {
+	if cfg.ImageID == "" {
+		log.Warn("image_id non renseigné : création de workspace et construction de golden impossibles")
+		return
+	}
+	dir := cfg.ImageDir(cfg.ImageID)
+	var missing []string
+	for _, name := range []string{"vmlinux", "rootfs.ext4"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		log.Warn("image invitée incomplète : la création de workspace échouera",
+			"image_id", cfg.ImageID, "dir", dir,
+			"manquant", strings.Join(missing, ", "),
+			"remede", "make image kernel, puis copier rootfs.ext4 et vmlinux dans ce répertoire")
+		return
+	}
+	log.Info("image invitée en place", "image_id", cfg.ImageID, "dir", dir)
 }
 
 func reconcile(log *slog.Logger, st *store.Store) error {
@@ -139,11 +168,11 @@ func listenAPI(log *slog.Logger, cfg *config.Config) (net.Listener, error) {
 	}
 
 	gid := -1
-	if cfg.SocketGroup != "" {
-		g, err := user.LookupGroup(cfg.SocketGroup)
+	if group := *cfg.SocketGroup; group != "" {
+		g, err := user.LookupGroup(group)
 		if err != nil {
 			log.Warn("groupe du socket introuvable, socket laissé au groupe courant",
-				"group", cfg.SocketGroup, "err", err)
+				"group", group, "err", err)
 		} else if n, err := strconv.Atoi(g.Gid); err == nil {
 			gid = n
 		}

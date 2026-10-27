@@ -406,6 +406,7 @@ sqlite3 /var/lib/wsd/wsd.db "DELETE FROM goldens WHERE id='<ancien-id>'"
 
 | Symptôme | Commande de diagnostic |
 |---|---|
+| `jailer launch: kernel invité (vmlinux) introuvable` (ou `rootfs invité`) | l'image invitée n'est pas en place : `ls /var/lib/wsd/images/<image_id>/`. Elle doit contenir `vmlinux` et `rootfs.ext4` (§ Installation initiale, étape 4). wsd le signale aussi au démarrage : `journalctl -u wsd \| grep "image invitée"` |
 | VM ne démarre pas | `journalctl -u wsd -n 100` ; log firecracker dans `/srv/jailer/firecracker/<id>/root/run/firecracker.log` |
 | code-server inaccessible | `wsctl get <id>` ; vérifier l'état `running` |
 | Page « réveil en cours » ne passe pas | `wsctl top` pour voir RSS et état |

@@ -52,6 +52,10 @@ func Launch(ctx context.Context, p LaunchParams) (*LaunchResult, error) {
 	vsockPath := filepath.Join(chroot, "v.sock")
 	logPath := filepath.Join(chroot, "run", "firecracker.log")
 
+	if err := checkSources(p); err != nil {
+		return nil, err
+	}
+
 	if err := os.MkdirAll(filepath.Join(chroot, "run"), 0o755); err != nil {
 		return nil, fmt.Errorf("chroot mkdir: %w", err)
 	}
@@ -130,6 +134,39 @@ func Launch(ctx context.Context, p LaunchParams) (*LaunchResult, error) {
 		VsockPath:  vsockPath,
 		ChromeRoot: chroot,
 	}, nil
+}
+
+// checkSources vérifie que les fichiers à lier dans le chroot existent.
+// Sans ce contrôle, l'échec arrive sous la forme d'un « link <src> <dst>:
+// no such file or directory », qui ne dit pas laquelle des deux extrémités
+// manque — alors que c'est presque toujours l'image invitée qui n'est pas en
+// place. Un hardlink entre filesystems différents donne, lui, un
+// « invalid cross-device link ».
+func checkSources(p LaunchParams) error {
+	sources := []struct{ what, path string }{
+		{"kernel invité (vmlinux)", p.KernelSrc},
+		{"rootfs invité", p.RootfsSrc},
+		{"disque workspace", p.WorkspaceSrc},
+	}
+	if p.VMStateSrc != "" {
+		sources = append(sources, struct{ what, path string }{"état VM du snapshot (vmstate)", p.VMStateSrc})
+	}
+	if p.MemSrc != "" {
+		sources = append(sources, struct{ what, path string }{"mémoire du snapshot (mem)", p.MemSrc})
+	}
+
+	for _, src := range sources {
+		if src.path == "" {
+			return fmt.Errorf("%s : chemin non renseigné", src.what)
+		}
+		if _, err := os.Stat(src.path); err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("%s introuvable : %s", src.what, src.path)
+			}
+			return fmt.Errorf("%s inaccessible (%s) : %w", src.what, src.path, err)
+		}
+	}
+	return nil
 }
 
 // DestroyChroot removes the jailer chroot directory for a workspace.
