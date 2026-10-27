@@ -55,12 +55,20 @@ Réseau invité statique : `eth0` = `172.16.0.2/30`, passerelle `172.16.0.1`, DN
 
 ### 4.2 Kernel (`kernel/`)
 
-Kernel LTS compilé avec la config invitée recommandée par Firecracker (dossier `resources/guest_configs` du repo Firecracker), plus :
+Kernel LTS compilé avec la config invitée recommandée par Firecracker
+(`resources/guest_configs/microvm-kernel-ci-<arch>-<série>.config` du repo
+Firecracker — le nom porte la série du kernel, et seules certaines séries sont
+fournies pour une version donnée de Firecracker), plus :
 
 - `CONFIG_VIRTIO_VSOCKETS=y`
 - `CONFIG_VIRTIO_BALLOON=y`
 - `CONFIG_VMGENID=y`
 - ext4, cgroups v2 et ce que systemd requiert.
+
+Ces options sont déjà toutes à `=y` dans la config amont pour la série épinglée,
+VMGenID compris : `kernel/build.sh` le vérifie plutôt que de le supposer, et
+s'arrête si l'une d'elles n'est pas compilée en dur. Rien ne doit être en
+module : la cmdline invitée contient `nomodule` et il n'y a pas d'initramfs.
 
 La sortie est `build/vmlinux`, non compressé.
 

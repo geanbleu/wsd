@@ -40,7 +40,7 @@ Chaque phase est livrable seule. On ne passe à la suivante que lorsque les crit
 - `wsctl golden build` (SPEC §7.2), avec `prepare_snapshot` côté agent.
 - Création par restore (SPEC §7.3) avec chemins identiques (SPEC §5).
 - Agent : `post_restore` complet (SPEC §8), relance du listener vsock après restore.
-- Activation de VMGenID si la version le supporte, sinon documenter l'absence et s'appuyer sur le réensemencement par l'agent.
+- Activation de VMGenID si la version le supporte, sinon documenter l'absence et s'appuyer sur le réensemencement par l'agent. **Supporté** : `CONFIG_VMGENID=y` dans la config invitée amont de la série 6.18, vérifié par `kernel/build.sh`. Le réensemencement par l'agent reste en place en complément.
 
 **Acceptation :**
 - création d'un workspace jusqu'à code-server prêt en moins de 1 s (p50 sur 20 créations), mesuré et noté ici ;
