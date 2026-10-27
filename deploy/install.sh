@@ -101,6 +101,8 @@ if [ "$SKIP_HOST_CHECK" = 0 ]; then
     if ! bash "$REPO_ROOT/deploy/check-host.sh"; then
         echo
         echo "check-host.sh signale des points KO." >&2
+        echo "Pour le filesystem reflink : deploy/setup-storage.sh --help" >&2
+        echo "Pour firecracker et jailer : relancer avec --with-deps" >&2
         echo "Corriger, ou relancer avec --skip-host-check pour installer quand même." >&2
         exit 1
     fi

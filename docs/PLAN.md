@@ -97,6 +97,11 @@ Chaque phase est livrable seule. On ne passe à la suivante que lorsque les crit
   unités systemd.
 - `deploy/fetch-deps.sh` : firecracker et jailer aux versions épinglées, SHA256
   vérifié, swagger de la version déposé dans `/usr/share/doc/wsd`.
+- `deploy/setup-storage.sh` : prépare le filesystem XFS `reflink=1` qui porte
+  `data_dir` et `jailer_dir`, sur périphérique dédié ou image montée en loop,
+  avec vérification `FICLONE` réelle, bind mount des chroots et entrées fstab.
+  `check-host.sh` teste désormais `FICLONE` au lieu de chercher `reflink=1`
+  dans les options de montage, où XFS ne l'expose jamais.
 - `make install`, `make uninstall`, `make dist` (archive host + `.sha256`),
   `make fmt`, `make help` ; version de build injectée par ldflags et flag
   `-version` sur les quatre binaires.
@@ -108,6 +113,8 @@ Chaque phase est livrable seule. On ne passe à la suivante que lorsque les crit
 - `DESTDIR=<dir> deploy/install.sh --skip-host-check` produit l'arborescence
   attendue, est rejouable sans écraser les configs, et `uninstall.sh --purge`
   remet le répertoire dans l'état initial sans toucher aux données ;
+- `check-host.sh` rend OK sur un XFS `reflink=1` et KO sur un filesystem sans
+  `FICLONE` (vérifié sur xfs et tmpfs) ;
 - déploiement sur un host vierge en suivant uniquement `docs/OPS.md`.
 
 ## Anomalies ouvertes

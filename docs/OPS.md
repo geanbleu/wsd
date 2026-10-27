@@ -13,8 +13,118 @@ Points vérifiés : `/dev/kvm`, cgroup v2, filesystem reflink sur `/var/lib/wsd`
 `ip_forward`.
 
 `firecracker` et `jailer` sont signalés KO tant qu'ils ne sont pas installés :
-`deploy/install.sh --with-deps` (ou `deploy/fetch-deps.sh`) s'en charge. La liste
-des paquets nécessaires aux builds est dans le [README](../README.md).
+`deploy/install.sh --with-deps` (ou `deploy/fetch-deps.sh`) s'en charge. Le point
+« filesystem reflink » est le plus contraignant : voir [Stockage](#stockage) et
+`deploy/setup-storage.sh`. La liste des paquets nécessaires aux builds est dans
+le [README](../README.md).
+
+## Stockage
+
+### Ce qui est exigé, et pourquoi
+
+wsd ne peut pas tourner sur n'importe quel filesystem. Deux mécanismes du noyau
+sont utilisés sur le chemin critique :
+
+- **`FICLONE` (copies reflink)** — à chaque création de workspace, le disque
+  `workspace.ext4` (20 GiB par défaut) est cloné depuis le template du golden ;
+  à chaque démarrage de VM, le `rootfs.ext4` du golden est cloné dans le chroot
+  pour que la VM puisse écrire dessus sans jamais toucher le fichier golden. Un
+  `cp` classique écrirait des gigaoctets à chaque fois : la cible de création en
+  moins d'une seconde en dépend directement. Seuls **XFS avec `reflink=1`** et
+  **btrfs** implémentent `FICLONE` ; ext4 renvoie `EOPNOTSUPP` et wsd échoue
+  avec une erreur explicite.
+- **Les hardlinks** — `vmlinux`, `workspace.ext4`, `mem` et `vmstate` sont
+  hardlinkés dans le chroot jailer. Un hardlink ne traverse pas les
+  filesystems : `data_dir` et `jailer_dir` doivent donc être **sur le même
+  filesystem**. C'est aussi ce qui fait que les pages du `mem` du golden sont
+  mutualisées en page cache entre tous les clones — l'économie de RAM vient de
+  là, pas du reflink.
+
+### Le préparer
+
+`deploy/setup-storage.sh` formate, monte, vérifie et prépare l'arborescence.
+Trois situations.
+
+**1. Un disque ou une partition dédiés** — le cas normal en production :
+
+```bash
+sudo bash deploy/setup-storage.sh --device /dev/nvme1n1 \
+     --mount /var/lib/wsd --jailer /srv/jailer --fstab
+```
+
+Le script formate en `mkfs.xfs -m reflink=1`, monte sur `/var/lib/wsd`, crée
+`images/`, `workspaces/`, `goldens/`, `jailer/`, monte en bind
+`/var/lib/wsd/jailer` sur `/srv/jailer` (même superbloc, donc les hardlinks
+fonctionnent entre les deux chemins), et écrit les entrées `fstab` par UUID. Le
+formatage demande une confirmation explicite : il détruit le contenu du
+périphérique.
+
+Sans `--jailer`, aucun bind mount n'est créé et il suffit de mettre
+`"jailer_dir": "/var/lib/wsd/jailer"` dans `wsd.json` — c'est plus simple, mais
+les chroots se retrouvent sous `data_dir`.
+
+**2. Le filesystem racine est déjà XFS `reflink=1` ou btrfs** — rien à
+formater. Il reste à s'assurer que `data_dir` et `jailer_dir` sont sur ce
+filesystem (donc qu'aucun des deux n'est un point de montage séparé), puis à
+créer l'arborescence, ce que fait `install.sh`. Vérifier le flag :
+
+```bash
+xfs_info "$(findmnt -n -o TARGET --target /var/lib/wsd)" | grep reflink
+```
+
+Depuis xfsprogs 5.1, `reflink=1` est le défaut de `mkfs.xfs` : un XFS récent
+l'a déjà.
+
+**3. Le filesystem racine n'a pas reflink (ext4 typiquement)** — une image XFS
+montée en loop permet de démarrer sans repartitionner :
+
+```bash
+sudo bash deploy/setup-storage.sh --image /var/lib/wsd.img --size 500G \
+     --mount /var/lib/wsd --jailer /srv/jailer --fstab
+```
+
+L'image est un fichier sparse : elle ne consomme que ce qui est écrit. En
+contrepartie, les performances sont celles du filesystem sous-jacent plus la
+couche loop, et la sauvegarde se fait au niveau de l'image entière, puisque le
+FS hôte ne voit qu'un seul gros fichier. À réserver aux maquettes et aux hosts
+qu'on ne peut pas repartitionner.
+
+### Vérifier
+
+Dans les trois cas, le test qui compte est un `FICLONE` réel, c'est ce que fait
+`check-host.sh` quand le répertoire est inscriptible :
+
+```bash
+bash deploy/check-host.sh | grep reflink
+#  [OK] /var/lib/wsd filesystem reflink : ok (FICLONE testé sur xfs, /var/lib/wsd)
+```
+
+À la main :
+
+```bash
+head -c 4096 /dev/urandom > /var/lib/wsd/.probe
+cp --reflink=always /var/lib/wsd/.probe /var/lib/wsd/.probe.clone && echo OK
+rm -f /var/lib/wsd/.probe /var/lib/wsd/.probe.clone
+```
+
+XFS n'expose **pas** `reflink` dans les options de montage — c'est un flag de
+`mkfs`, invisible dans `/proc/mounts`. Chercher `reflink=1` dans la sortie de
+`mount` ou de `findmnt` ne prouve donc rien, ni dans un sens ni dans l'autre.
+
+### Dimensionner
+
+| Poste | Taille | Remarque |
+|---|---|---|
+| `workspaces/<id>/workspace.ext4` | `workspace_disk_gib` nominal (20 GiB) | fichier sparse cloné en reflink : ne consomme au départ que les blocs du template, puis les blocs réellement écrits par l'utilisateur |
+| `goldens/<id>/mem` | ≈ `vm.mem_mib` | un par golden, partagé en page cache par tous les clones |
+| `goldens/<id>/rootfs.ext4` | taille du rootfs (≈ 2 GiB) | les clones partagent les blocs non modifiés |
+| `workspaces/<id>/suspend/{mem,vmstate}` | ≈ `vm.mem_mib` par workspace suspendu | un workspace repris depuis son propre snapshot ne partage plus de pages avec le golden |
+| chroots jailer | négligeable | hardlinks et clones reflink |
+
+Le volume réel est donc très inférieur à la somme des tailles nominales, mais il
+croît avec l'usage : prévoir de la marge et surveiller `df`, pas la somme des
+`workspace_disk_gib`. Un workspace suspendu coûte en plus un `mem` de la taille
+de la RAM de la VM.
 
 ## Installation initiale
 

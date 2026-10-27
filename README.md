@@ -31,7 +31,12 @@ et au backend mémoire `File` de Firecracker.
 
 - Linux ≥ 5.10 x86_64, `/dev/kvm`, cgroup v2.
 - `/var/lib/wsd` et `/srv/jailer` **sur le même filesystem**, en XFS
-  (`reflink=1`) ou btrfs — les hardlinks et les copies reflink en dépendent.
+  (`reflink=1`) ou btrfs — les copies reflink (`FICLONE`) clonent le disque
+  workspace et le rootfs du golden sans recopier les données, et les hardlinks
+  mutualisent le `mem` du golden entre les VM. ext4 ne sait pas faire de
+  `FICLONE`. `deploy/setup-storage.sh` prépare ce stockage, sur un périphérique
+  dédié ou dans une image XFS montée en loop ; voir
+  [Stockage](docs/OPS.md#stockage).
 - `iproute2`, `nftables`, `net.ipv4.ip_forward=1`.
 - Pour construire l'image invitée : `docker`, `e2fsprogs` ≥ 1.45 (`mkfs.ext4 -d`).
 - Pour construire le kernel invité : `make`, `gcc`, `bison`, `flex`, `bc`,
@@ -42,6 +47,10 @@ Tout vérifier d'un coup :
 ```bash
 bash deploy/check-host.sh
 ```
+
+Le test du filesystem est un `FICLONE` réel quand le répertoire est
+inscriptible : XFS n'expose pas `reflink` dans les options de montage, c'est un
+flag de `mkfs`.
 
 ## Démarrage rapide
 
