@@ -28,7 +28,6 @@ guide :
 |---|---|
 | **Le masquerade host n'est jamais posé** par wsd (`netns.SetupHostMasquerade` n'a pas d'appelant) | Sans règle nft posée à la main (étape 6), les VM ne joignent rien au-delà de leur veth : ni DNS, ni registre, ni endpoint LLM. |
 | `net.egress_iface` n'est pas validé | Une interface inexistante ne se voit qu'à la première création de workspace. |
-| `wsctl token` produit un lien en `http://` | Derrière un terminateur TLS, corriger le schéma à la main. |
 
 Ce guide indique le contournement là où il faut. Le reste du parcours est
 vérifié de bout en bout : golden construit, workspace créé et joignable.
@@ -437,6 +436,56 @@ server {
 `proxy_read_timeout` doit être généreux : une session VS Code garde des
 WebSockets ouvertes longtemps.
 
+### 6.4 Accès sans TLS, en labo
+
+wsproxy écoute en HTTP clair : TLS n'est nécessaire que pour une exposition
+réelle. Sur un host isolé — une VM de laboratoire, un Proxmox non exposé — le
+plus simple est un tunnel SSH, ce que recommande d'ailleurs en premier la
+documentation de code-server, Let's Encrypt n'ayant de sens que si la machine
+est joignable depuis Internet.
+
+Dans `/etc/wsd/wsd.json` et `/etc/wsd/wsproxy.json` :
+
+```json
+"domain": "localhost"
+```
+
+et dans `wsd.json` seulement, pour que les liens produits soient directement
+cliquables :
+
+```json
+"external_scheme": "http",
+"external_port": 8080
+```
+
+Depuis le poste client :
+
+```bash
+ssh -N -L 8080:127.0.0.1:8080 root@<ip-du-host>
+```
+
+Les workspaces sont alors sur `http://<id>.ws.localhost:8080`, ce que
+`wsctl token` produit tel quel.
+
+Pourquoi `localhost` comme domaine plutôt qu'un nom interne : Chrome et Firefox
+récents résolvent **n'importe quel sous-domaine de `localhost`** vers la
+loopback, sans entrée DNS ni `/etc/hosts`, et traitent ces origines comme de
+confiance — on évite donc du même coup les restrictions que les navigateurs
+appliquent aux origines non sécurisées. Safari est moins régulier sur ce point :
+s'y rabattre sur une entrée `/etc/hosts` par workspace.
+
+Variante sans tunnel, si le poste client est sur le même réseau que le host et
+dispose d'une résolution DNS publique : mettre
+`"domain": "<ip-du-host>.sslip.io"`. Ces services résolvent n'importe quel
+sous-domaine vers l'IP encodée dans le nom, ce qui donne un wildcard sans rien
+installer. Réserve : certains résolveurs d'entreprise filtrent les réponses DNS
+pointant vers des adresses privées, par protection contre le DNS rebinding —
+l'entrée `/etc/hosts` reste le repli.
+
+Dans les deux cas, rien à faire de particulier pour les WebSockets : le tunnel
+SSH comme l'accès direct transportent du TCP, et c'est wsproxy qui gère
+l'upgrade.
+
 ---
 
 ## 7. Image invitée et kernel **[build]**
@@ -604,9 +653,9 @@ wsctl token <id>
 # http://<id>.ws.example.internal/?tkn=…
 ```
 
-Le lien est émis en `http://` sans tenir compte du terminateur TLS : derrière
-HTTPS, remplacer le schéma à la main. Le token est à usage unique et sans date
-d'expiration ; le cookie qu'il pose vaut `cookie_ttl` (24 h par défaut).
+Le schéma et le port du lien viennent d'`external_scheme` et `external_port`
+dans `wsd.json`. Le token est à usage unique et sans date d'expiration ; le
+cookie qu'il pose vaut `cookie_ttl` (24 h par défaut).
 
 ### ✅ Vérification
 

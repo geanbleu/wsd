@@ -4,7 +4,9 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -20,6 +22,8 @@ type Config struct {
 	Egress         EgressCfg      `json:"egress"`
 	IdleTimeout    string         `json:"idle_timeout"`
 	Domain         string         `json:"domain"`
+	ExternalScheme string         `json:"external_scheme"` // schéma des liens d'accès, défaut "http"
+	ExternalPort   int            `json:"external_port"`   // port public de wsproxy ; 0 = port par défaut du schéma
 	ImageID        string         `json:"image_id"`
 	SocketPath     string         `json:"socket_path"`
 	SocketGroup    *string        `json:"socket_group"` // nil = défaut "wsd" ; "" = ne pas changer de groupe
@@ -79,6 +83,9 @@ func (cfg *Config) applyDefaults() {
 	if cfg.SocketPath == "" {
 		cfg.SocketPath = "/run/wsd/wsd.sock"
 	}
+	if cfg.ExternalScheme == "" {
+		cfg.ExternalScheme = "http"
+	}
 	if cfg.SocketGroup == nil {
 		// Absent de la config : défaut de SPEC §10. Une valeur explicitement
 		// vide, elle, demande de ne pas toucher au groupe du socket.
@@ -118,6 +125,20 @@ func (cfg *Config) validate() error {
 		return fmt.Errorf("config: net.pool requis")
 	}
 	return nil
+}
+
+// WorkspaceURL construit l'URL par laquelle un utilisateur joint un workspace.
+// Le label « ws » est ajouté ici comme il l'est côté wsproxy : Domain porte le
+// domaine de base. Le port n'est écrit que s'il n'est pas celui du schéma, pour
+// que les déploiements derrière un terminateur TLS gardent des liens propres.
+func (cfg *Config) WorkspaceURL(wsID string) string {
+	host := wsID + ".ws." + cfg.Domain
+	port := cfg.ExternalPort
+	if port != 0 && !(cfg.ExternalScheme == "http" && port == 80) &&
+		!(cfg.ExternalScheme == "https" && port == 443) {
+		host = net.JoinHostPort(host, strconv.Itoa(port))
+	}
+	return cfg.ExternalScheme + "://" + host
 }
 
 // IdleTimeoutDuration parses IdleTimeout as a Duration.

@@ -103,6 +103,8 @@ du host autres que son bout de veth.
 |---|---|---|
 | `idle_timeout` | `30m` | Durée d'inactivité au bout de laquelle wsd suspend un workspace `running`. Format `time.ParseDuration` (`45m`, `2h`). Le reaper tourne chaque minute. Une valeur invalide retombe silencieusement sur 30 min. |
 | `domain` | — | Domaine de base, cf. plus haut. Sert aux liens de `wsctl token`. |
+| `external_scheme` | `http` | Schéma des liens produits par `wsctl token`. Mettre `https` derrière un terminateur TLS. |
+| `external_port` | `0` | Port par lequel les utilisateurs joignent wsproxy, écrit dans les liens. `0` ou le port par défaut du schéma (80 en http, 443 en https) ne sont pas écrits. C'est le port *vu par le navigateur* : derrière un terminateur TLS ou un tunnel SSH, ce n'est pas forcément celui de `listen` dans `wsproxy.json`. |
 
 ### opencode (`opencode`)
 
@@ -223,9 +225,6 @@ consulter avant de toucher aux appels de l'API Firecracker.
 
 ## Limites connues
 
-- `wsctl token` produit un lien en `http://`, sans tenir compte de
-  `external_scheme` de wsproxy. Derrière un terminateur TLS, remplacer le
-  schéma à la main dans le lien.
 - `idle_timeout` est global : pas de valeur par workspace.
 - `workspace_disk_gib` est figé par le golden ; agrandir un disque workspace
   existant est hors v1.

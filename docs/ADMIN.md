@@ -97,8 +97,9 @@ wsctl token <id>
 Le token est **à usage unique** — il est supprimé de la base dès qu'il est
 échangé — et **sans date d'expiration** : un lien non utilisé reste valable.
 L'échange pose un cookie signé en HMAC, valable `cookie_ttl` (24 h par défaut).
-Le lien est produit en `http://` sans tenir compte du terminateur TLS : derrière
-HTTPS, corriger le schéma à la main.
+Le schéma et le port du lien viennent d'`external_scheme` et `external_port`
+dans `wsd.json` : ce sont ceux que voit le navigateur, pas forcément ceux de
+`listen` dans `wsproxy.json`.
 
 Révoquer l'accès de tout le monde d'un coup se fait en changeant
 `hmac_secret` dans `wsproxy.json` puis en redémarrant wsproxy : tous les cookies
@@ -734,7 +735,6 @@ Elles changent la façon de travailler au quotidien :
 | Un workspace repris de son propre snapshot ne partage plus de pages avec le golden | la densité se dégrade après un cycle suspend/resume |
 | `idle_timeout` est global | pas de politique par workspace ni par utilisateur |
 | `workspace_disk_gib` est figé par le golden | un changement impose de reconstruire le golden ; agrandir un disque existant est hors v1 |
-| `wsctl token` produit un lien `http://` | corriger le schéma à la main derrière un terminateur TLS |
 | Les tokens n'expirent pas | un lien non utilisé reste valable : les purger |
 | Pas de révocation par workspace | seule la rotation de `hmac_secret` révoque, et elle révoque tout |
 | Les orphelins ne sont jamais supprimés automatiquement | inventaire croisé périodique à faire |

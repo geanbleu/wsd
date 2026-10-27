@@ -29,5 +29,7 @@
     "config_template": "",
     "secrets_file": ""
   },
-  "domain": "example.internal"
+  "domain": "example.internal",
+  "external_scheme": "http",
+  "external_port": 8080
 }

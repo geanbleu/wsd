@@ -718,7 +718,7 @@ func (h *Handler) createToken(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	url := "http://" + id + ".ws." + h.Cfg.Domain + "/?tkn=" + token
+	url := h.Cfg.WorkspaceURL(id) + "/?tkn=" + token
 	writeJSON(w, http.StatusCreated, map[string]string{"token": token, "url": url})
 }
 

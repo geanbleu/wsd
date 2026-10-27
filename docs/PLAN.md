@@ -135,10 +135,6 @@ Chaque phase est livrable seule. On ne passe à la suivante que lorsque les crit
    `Teardown` : son nom n'est vérifié à aucun moment. `net.dns` est refusé
    explicitement s'il est vide, mais au moment de la création, pas au démarrage
    de wsd. Les deux devraient être validés dans `config.validate()`.
-3. **`wsctl token` produit un lien en `http://`** sans tenir compte de
-   `external_scheme` de wsproxy. Derrière un terminateur TLS, le lien doit être
-   corrigé à la main.
-
 ### Corrigées
 
 Relevées en mettant un premier déploiement en service, dans cet ordre.
@@ -152,6 +148,7 @@ Relevées en mettant un premier déploiement en service, dans cet ordre.
 | `agent non disponible après 60 s (ping recv: EOF)` | `net.FileConn` ne sait pas envelopper un descripteur `AF_VSOCK` : l'agent fermait la connexion aussitôt acceptée. `os.NewFile` à la place. |
 | `code-server non disponible après 30 s` | le sondage était lancé dans le netns vers l'IP du netns, que la règle DNAT ne couvre pas. Il part désormais du host, par le chemin de wsproxy. |
 | workspace annoncé `running` puis mort dans la seconde | `fc.Launch` recevait le contexte de la requête HTTP et le passait à `exec.CommandContext` : Go tuait la VM dès que le handler répondait. La durée de vie d'une VM est gérée par son PID, le contexte ne borne plus que l'attente du socket API. |
+| lien de `wsctl token` toujours en `http://` et sans port | l'URL était écrite en dur. `external_scheme` et `external_port` de `wsd.json` la construisent, ce qui la rend utilisable derrière un terminateur TLS comme derrière un tunnel SSH. |
 | `--owner` et `--keep-data` ignorés | `flag.Parse` s'arrête au premier argument non-flag ; `wsctl rm <id> --keep-data` supprimait donc le disque. |
 | console invitée perdue | la sortie du process firecracker n'était pas redirigée, alors que la cmdline contient `console=ttyS0` : un invité qui ne démarrait pas ne laissait aucune trace. Capturée dans `<chroot>/run/console.log`. |
 
