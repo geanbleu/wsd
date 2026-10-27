@@ -723,7 +723,8 @@ sudo grep -rl "$(python3 -c 'import json;print(json.load(open("/etc/wsd/secrets.
 |---|---|---|
 | `/dev/kvm` absent | 1 | virtualisation désactivée dans le BIOS, ou imbrication non activée par l'hyperviseur hôte |
 | `FICLONE refusé par ext4` | 2 | `deploy/setup-storage.sh`, cas 3 pour une image loop |
-| `devices différents` entre `/var/lib/wsd` et `/srv/jailer` | 2 | les deux doivent être sur un seul filesystem : utiliser `--jailer` de `setup-storage.sh` |
+| `devices différents` entre `/var/lib/wsd` et `/srv/jailer`, ou `invalid cross-device link` au premier `create` | 2 | les deux chemins doivent être sur un seul filesystem. Soit `jailer_dir` sous `data_dir` (`"jailer_dir": "/var/lib/wsd/jailer"`, aucun montage), soit un bind mount — c'est ce que fait `--jailer` de `setup-storage.sh` |
+| Une création échouée laisse des traces | 10 | le workspace passe en `error` sans rien libérer : `wsctl rm <id>` supprime netns, chroot et allocation IP |
 | `sha256sum: FAILED` | 3 | téléchargement corrompu ou release modifiée : relancer, et vérifier `versions.env` |
 | `wsctl: permission denied` sur le socket | 8 | `socket_group`, appartenance au groupe `wsd`, `ls -l /run/wsd/wsd.sock` |
 | `wsd` ne démarre pas, `config:` dans le journal | 5 | JSON invalide ou champ requis manquant ; voir `CONFIG.md` |

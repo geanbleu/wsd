@@ -2,6 +2,7 @@
 package disk
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -51,6 +52,16 @@ func Hardlink(src, dst string) error {
 	}
 	os.Remove(dst) // remove stale link if present
 	if err := os.Link(src, dst); err != nil {
+		// EXDEV est le symptôme d'une erreur de déploiement, pas d'un bug :
+		// un hardlink ne traverse pas les filesystems, donc data_dir et
+		// jailer_dir doivent partager le même. Le dire ici évite de laisser
+		// l'opérateur face à un « invalid cross-device link » nu.
+		if errors.Is(err, syscall.EXDEV) {
+			return fmt.Errorf("hardlink %s → %s : les deux chemins ne sont pas "+
+				"sur le même filesystem. data_dir et jailer_dir doivent le "+
+				"partager (voir docs/INSTALL.md § Stockage et "+
+				"deploy/setup-storage.sh) : %w", src, dst, err)
+		}
 		return fmt.Errorf("hardlink %s → %s: %w", src, dst, err)
 	}
 	return nil

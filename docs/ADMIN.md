@@ -431,8 +431,13 @@ wsctl rm <id> --keep-data       # garde le disque de l'utilisateur
 
 ### Ressources orphelines
 
-wsd ne supprime jamais automatiquement ce qu'il ne reconnaît plus. L'inventaire
-croisé se fait à la main :
+wsd ne supprime jamais automatiquement ce qu'il ne reconnaît plus, et **une
+création qui échoue ne libère rien** : le netns, le chroot jailer et l'allocation
+IP restent en place, le workspace passant simplement en `error`. Un `wsctl rm
+<id>` sur ces workspaces libère tout — c'est le premier geste après une série de
+créations en échec, typiquement pendant la mise au point d'un déploiement.
+
+L'inventaire croisé se fait à la main :
 
 ```bash
 # ce que wsd connaît
