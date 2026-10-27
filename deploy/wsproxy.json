@@ -1,5 +1,5 @@
 {
-  "domain": "ws.example.internal",
+  "domain": "example.internal",
   "listen": ":8080",
   "wsd_socket": "/run/wsd/wsd.sock",
   "hmac_secret": "REMPLACER_PAR_SECRET_ALEATOIRE_32_OCTETS",

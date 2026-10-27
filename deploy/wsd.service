@@ -1,7 +1,9 @@
 [Unit]
 Description=wsd — workspace daemon Firecracker
-After=network.target
-Documentation=file:/usr/share/doc/wsd/README
+Documentation=file:/usr/share/doc/wsd/OPS.md
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/dev/kvm
 
 [Service]
 Type=simple
@@ -13,12 +15,22 @@ RestartSec=5
 User=root
 Group=root
 
+# /run/wsd, recréé à chaque démarrage. wsd y place wsd.sock en 0660 et donne
+# le socket au groupe de config socket_group (défaut wsd), pour wsproxy.
+RuntimeDirectory=wsd
+RuntimeDirectoryMode=0750
+
 # Journalisation structurée
 StandardError=journal
 SyslogIdentifier=wsd
 
 # Limites
 LimitNOFILE=65536
+
+# Un arrêt ne doit pas tuer les firecracker lancés sous jailer : ils sont dans
+# leurs propres cgroups et les workspaces survivent à un redémarrage de wsd.
+KillMode=process
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target

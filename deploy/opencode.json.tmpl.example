@@ -1,0 +1,24 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  "providers": {
+    "interne": {
+      "name": "LLM interne",
+      "package": "@ai-sdk/openai-compatible",
+      "settings": {
+        "baseURL": "{{ .endpoint }}",
+        "apiKey": "{{ .api_key }}"
+      },
+      "models": {
+        "{{ .model }}": {}
+      }
+    }
+  },
+
+  "model": "interne/{{ .model }}",
+
+  "permissions": [
+    { "action": "edit", "resource": "/workspace/**", "effect": "allow" },
+    { "action": "bash", "resource": "*", "effect": "ask" }
+  ]
+}

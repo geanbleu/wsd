@@ -1,8 +1,9 @@
 [Unit]
 Description=wsproxy — reverse proxy HTTP/WebSocket pour les workspaces
-After=network.target wsd.service
+Documentation=file:/usr/share/doc/wsd/OPS.md
+After=network-online.target wsd.service
+Wants=network-online.target
 Requires=wsd.service
-Documentation=file:/usr/share/doc/wsd/README
 
 [Service]
 Type=simple
@@ -10,7 +11,7 @@ ExecStart=/usr/local/bin/wsproxy -config /etc/wsd/wsproxy.json
 Restart=on-failure
 RestartSec=5
 
-# wsproxy tourne en utilisateur dédié du groupe wsd (accès au socket Unix).
+# wsproxy tourne en utilisateur dédié du groupe wsd (accès à /run/wsd/wsd.sock).
 User=wsproxy
 Group=wsd
 
@@ -18,6 +19,18 @@ StandardError=journal
 SyslogIdentifier=wsproxy
 
 LimitNOFILE=65536
+
+# Durcissement : wsproxy ne fait que lire sa config et relayer du HTTP.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=full
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
 WantedBy=multi-user.target

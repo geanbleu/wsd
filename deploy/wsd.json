@@ -4,12 +4,14 @@
   "firecracker_bin": "/usr/local/bin/firecracker",
   "jailer_bin": "/usr/local/bin/jailer",
   "socket_path": "/run/wsd/wsd.sock",
+  "socket_group": "wsd",
   "uid_range": [200000, 299999],
   "image_id": "debian-bookworm-v1",
   "vm": {
     "vcpus": 2,
     "mem_mib": 2048,
-    "workspace_disk_gib": 20
+    "workspace_disk_gib": 20,
+    "cpu_max": "200000 100000"
   },
   "net": {
     "pool": "10.200.0.0/16",
@@ -24,8 +26,8 @@
   },
   "idle_timeout": "30m",
   "opencode": {
-    "config_template": "/etc/wsd/opencode.json.tmpl",
-    "secrets_file": "/etc/wsd/secrets.json"
+    "config_template": "",
+    "secrets_file": ""
   },
-  "domain": "ws.example.internal"
+  "domain": "example.internal"
 }
