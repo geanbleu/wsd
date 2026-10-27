@@ -2,7 +2,7 @@ FROM debian:stable-slim
 
 # ── versions ──────────────────────────────────────────────────────────────────
 ARG CODE_SERVER_VERSION=v4.123.0
-ARG OPENCODE_VERSION=v1.0.65
+ARG OPENCODE_VERSION=v1.19.4
 ARG GO_VERSION=1.26.3
 
 # ── paquets système ───────────────────────────────────────────────────────────
@@ -37,12 +37,15 @@ RUN curl -fsSLo /tmp/code-server.deb \
     && rm /tmp/code-server.deb
 
 # ── opencode ──────────────────────────────────────────────────────────────────
-# sst/opencode est un binaire Go statique ; vérifier le nom de l'asset dans les
-# releases GitHub à chaque mise à jour de version.
-# URL attendue : https://github.com/sst/opencode/releases/download/<ver>/opencode_linux_amd64
-RUN curl -fsSLo /usr/local/bin/opencode \
-    "https://github.com/sst/opencode/releases/download/${OPENCODE_VERSION}/opencode_linux_amd64" \
-    && chmod +x /usr/local/bin/opencode
+# anomalyco/opencode publie une archive contenant un unique exécutable
+# « opencode » (~215 Mio décompressé). Vérifier le nom de l'asset à chaque
+# montée de version : utiliser -musl pour une base Alpine, -baseline pour un
+# CPU sans AVX2.
+RUN curl -fsSL \
+    "https://github.com/anomalyco/opencode/releases/download/${OPENCODE_VERSION}/opencode-linux-x64.tar.gz" \
+    | tar -xz -C /usr/local/bin opencode \
+    && chmod 0755 /usr/local/bin/opencode \
+    && /usr/local/bin/opencode --version
 
 # ── wsagent ───────────────────────────────────────────────────────────────────
 COPY wsagent /usr/local/bin/wsagent

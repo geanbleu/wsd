@@ -130,11 +130,50 @@ chmod 0600 /etc/wsd/secrets.json
 systemctl restart wsd
 ```
 
-Le schéma de `opencode.json` évolue : le vérifier contre la version épinglée
-dans `versions.env` (`$schema` pointe sur `https://opencode.ai/config.json`)
-avant de modifier le template. Les champs `provider`, `permission` et
-`small_model` au singulier sont dépréciés au profit de `providers` et
-`permissions`.
+#### Schéma : attention à la majeure d'opencode
+
+`https://opencode.ai/config.json` décrit le schéma **V2**, alors que la série
+1.x épinglée dans `versions.env` est un opencode **V1**. Les deux formes ne sont
+pas interchangeables, et l'écart est piégeux :
+
+| Champ | V1 (série 1.x, épinglée) | V2 |
+|---|---|---|
+| provider | `provider` (singulier) | `providers` |
+| permissions | `permission` (singulier) | `permissions` |
+
+Donné à opencode 1.19.4, un `permissions` est **rejeté** (« V2 permissions are
+not supported by OpenCode V1 ») et un `providers` est accepté puis
+**silencieusement ignoré** — l'endpoint LLM n'est alors jamais configuré, sans
+le moindre message. Le template fourni utilise la forme V1.
+
+Forme V1 des permissions : un objet par outil (`read`, `edit`, `glob`, `grep`,
+`list`, `bash`, `task`, `webfetch`…) dont la valeur est `"allow"`, `"ask"`,
+`"deny"`, ou un objet motif → action, par exemple
+`"bash": {"git status": "allow", "*": "ask"}`.
+
+Après toute modification du template, le vérifier avec le binaire de la version
+épinglée, qui valide la config et affiche ce qu'il en a réellement retenu :
+
+```bash
+opencode debug config --pure
+```
+
+Un `provider` absent de la sortie, ou un `apiKey` qui n'apparaît pas masqué en
+`***`, signale que le bloc n'a pas été pris en compte.
+
+#### Le provider est téléchargé à l'exécution
+
+`npm: "@ai-sdk/openai-compatible"` est récupéré par opencode **dans la VM**, au
+premier appel au modèle, pas à la construction de l'image. L'egress du workspace
+doit donc laisser passer le registre npm (`registry.npmjs.org`, port 443) en
+plus de l'endpoint LLM. Avec l'`egress.allow` permissif de l'exemple
+(`0.0.0.0/0:443`) c'est transparent ; avec une liste blanche serrée, opencode
+reste muet et l'appel au modèle échoue. opencode télécharge de la même façon ses
+outils annexes dans `~/.cache/opencode/bin`.
+
+Le serveur opencode écoute dans l'invité sur `127.0.0.1:4096`
+(`image/guest/opencode.service`). Le port **doit** être passé explicitement :
+`opencode serve` sans `--port` écoute sur un port aléatoire.
 
 ---
 

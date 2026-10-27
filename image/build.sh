@@ -11,7 +11,10 @@ VERSIONS_ENV="$REPO_ROOT/deploy/versions.env"
 # shellcheck disable=SC1090
 source "$VERSIONS_ENV"
 
-ROOTFS_SIZE="${ROOTFS_SIZE:-2G}"   # taille du ext4 — ajustable
+# Taille du ext4 invité. Le fichier est creux et cloné en reflink par VM : une
+# taille généreuse coûte peu. Occupants principaux : toolchain Go, code-server,
+# opencode (~215 Mio), base Debian.
+ROOTFS_SIZE="${ROOTFS_SIZE:-4G}"
 IMAGE_TAG="wsd-rootfs:${CODE_SERVER_VERSION}-${OPENCODE_VERSION}"
 
 mkdir -p "$BUILD_DIR"

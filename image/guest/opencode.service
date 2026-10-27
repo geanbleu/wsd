@@ -7,7 +7,9 @@ After=wsagent.service
 [Service]
 User=coder
 Group=coder
-ExecStart=opencode serve
+# --port est indispensable : sans lui, opencode écoute sur un port aléatoire
+# (défaut 0). --hostname 127.0.0.1 est le défaut, explicité ici.
+ExecStart=/usr/local/bin/opencode serve --port 4096 --hostname 127.0.0.1
 WorkingDirectory=/workspace
 Environment=HOME=/home/coder
 Restart=on-failure

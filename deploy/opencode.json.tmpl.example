@@ -1,11 +1,11 @@
 {
   "$schema": "https://opencode.ai/config.json",
 
-  "providers": {
+  "provider": {
     "interne": {
+      "npm": "@ai-sdk/openai-compatible",
       "name": "LLM interne",
-      "package": "@ai-sdk/openai-compatible",
-      "settings": {
+      "options": {
         "baseURL": "{{ .endpoint }}",
         "apiKey": "{{ .api_key }}"
       },
@@ -17,8 +17,8 @@
 
   "model": "interne/{{ .model }}",
 
-  "permissions": [
-    { "action": "edit", "resource": "/workspace/**", "effect": "allow" },
-    { "action": "bash", "resource": "*", "effect": "ask" }
-  ]
+  "permission": {
+    "edit": "allow",
+    "bash": "ask"
+  }
 }
