@@ -3,21 +3,33 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"os/user"
+	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
 	"wsd/internal/api"
+	"wsd/internal/config"
 	"wsd/internal/store"
+	"wsd/internal/version"
 )
 
 func main() {
 	configPath := flag.String("config", "/etc/wsd/wsd.json", "chemin vers wsd.json")
+	showVersion := flag.Bool("version", false, "afficher la version et quitter")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version.String("wsd"))
+		return
+	}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
@@ -44,15 +56,12 @@ func main() {
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
-	sockPath := cfg.SocketPath
-	os.MkdirAll(sockPath[:len(sockPath)-len("/wsd.sock")], 0o750)
-	os.Remove(sockPath)
-	ln, err := net.Listen("unix", sockPath)
+	ln, err := listenAPI(log, cfg)
 	if err != nil {
 		log.Error("listen", "err", err)
 		os.Exit(1)
 	}
-	os.Chmod(sockPath, 0o660)
+	sockPath := cfg.SocketPath
 
 	srv := &http.Server{Handler: mux}
 	log.Info("wsd démarré", "socket", sockPath)
@@ -118,4 +127,48 @@ func idleReaper(log *slog.Logger, st *store.Store, h interface{ SuspendByID(stri
 			}
 		}
 	}
+}
+
+// listenAPI prépare le socket unix de l'API : répertoire et socket en 0660,
+// groupe cfg.SocketGroup, pour que wsproxy (membre de ce groupe) puisse l'ouvrir
+// alors que wsd tourne en root (SPEC §10).
+func listenAPI(log *slog.Logger, cfg *config.Config) (net.Listener, error) {
+	dir := filepath.Dir(cfg.SocketPath)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return nil, fmt.Errorf("créer %s: %w", dir, err)
+	}
+
+	gid := -1
+	if cfg.SocketGroup != "" {
+		g, err := user.LookupGroup(cfg.SocketGroup)
+		if err != nil {
+			log.Warn("groupe du socket introuvable, socket laissé au groupe courant",
+				"group", cfg.SocketGroup, "err", err)
+		} else if n, err := strconv.Atoi(g.Gid); err == nil {
+			gid = n
+		}
+	}
+	if gid >= 0 {
+		if err := os.Chown(dir, 0, gid); err != nil {
+			log.Warn("chgrp du répertoire du socket", "dir", dir, "err", err)
+		}
+	}
+
+	if err := os.Remove(cfg.SocketPath); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("supprimer le socket résiduel: %w", err)
+	}
+	ln, err := net.Listen("unix", cfg.SocketPath)
+	if err != nil {
+		return nil, err
+	}
+	if gid >= 0 {
+		if err := os.Chown(cfg.SocketPath, 0, gid); err != nil {
+			log.Warn("chgrp du socket", "socket", cfg.SocketPath, "err", err)
+		}
+	}
+	if err := os.Chmod(cfg.SocketPath, 0o660); err != nil {
+		ln.Close()
+		return nil, fmt.Errorf("chmod du socket: %w", err)
+	}
+	return ln, nil
 }

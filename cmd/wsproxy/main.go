@@ -22,6 +22,8 @@ import (
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
+
+	"wsd/internal/version"
 )
 
 // ── config ────────────────────────────────────────────────────────────────────
@@ -38,7 +40,7 @@ type Config struct {
 
 // OIDCConfig enables OIDC auth (optional). If Issuer is empty, token-only mode is used.
 type OIDCConfig struct {
-	Issuer       string `json:"issuer"`        // e.g. https://accounts.google.com
+	Issuer       string `json:"issuer"` // e.g. https://accounts.google.com
 	ClientID     string `json:"client_id"`
 	ClientSecret string `json:"client_secret"`
 	// redirect_uri is https://<id>.ws.<domain>/_oidc/callback by default.
@@ -80,7 +82,13 @@ func loadConfig(path string) (*Config, error) {
 
 func main() {
 	configPath := flag.String("config", "/etc/wsd/wsproxy.json", "chemin vers wsproxy.json")
+	showVersion := flag.Bool("version", false, "afficher la version et quitter")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version.String("wsproxy"))
+		return
+	}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 

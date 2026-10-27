@@ -22,6 +22,7 @@ type Config struct {
 	Domain         string         `json:"domain"`
 	ImageID        string         `json:"image_id"`
 	SocketPath     string         `json:"socket_path"`
+	SocketGroup    string         `json:"socket_group"`
 	Opencode       OpencodeConfig `json:"opencode"`
 }
 
@@ -77,6 +78,9 @@ func Load(path string) (*Config, error) {
 func (cfg *Config) applyDefaults() {
 	if cfg.SocketPath == "" {
 		cfg.SocketPath = "/run/wsd/wsd.sock"
+	}
+	if cfg.SocketGroup == "" {
+		cfg.SocketGroup = "wsd"
 	}
 	if cfg.VM.VCPUs == 0 {
 		cfg.VM.VCPUs = 2

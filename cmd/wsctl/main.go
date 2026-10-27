@@ -10,12 +10,15 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"wsd/internal/version"
 )
 
 const defaultSocket = "/run/wsd/wsd.sock"
 
 func main() {
 	socket := flag.String("socket", defaultSocket, "socket unix de wsd")
+	showVersion := flag.Bool("version", false, "afficher la version et quitter")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: wsctl [-socket <path>] <commande> [args]\n\n")
 		fmt.Fprintf(os.Stderr, "Commandes:\n")
@@ -26,12 +29,17 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  golden build                     Construire le golden snapshot\n")
 		fmt.Fprintf(os.Stderr, "  golden get                       Afficher le golden actif\n")
 		fmt.Fprintf(os.Stderr, "  suspend <id>                     Suspendre un workspace\n")
-	fmt.Fprintf(os.Stderr, "  resume <id>                      Réveiller un workspace\n")
-	fmt.Fprintf(os.Stderr, "  token <id>                       Générer un lien d'accès à usage unique\n")
-	fmt.Fprintf(os.Stderr, "  top                              Afficher les VMs avec RSS et activité\n")
+		fmt.Fprintf(os.Stderr, "  resume <id>                      Réveiller un workspace\n")
+		fmt.Fprintf(os.Stderr, "  token <id>                       Générer un lien d'accès à usage unique\n")
+		fmt.Fprintf(os.Stderr, "  top                              Afficher les VMs avec RSS et activité\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version.String("wsctl"))
+		return
+	}
 
 	args := flag.Args()
 	if len(args) == 0 {

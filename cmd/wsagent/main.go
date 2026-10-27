@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/base64"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net"
@@ -15,10 +16,20 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
 	"wsd/internal/agentproto"
+	"wsd/internal/version"
 )
 
 func main() {
+	showVersion := flag.Bool("version", false, "afficher la version et quitter")
+	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version.String("wsagent"))
+		return
+	}
+
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 	if err := mountWorkspace(log); err != nil {
