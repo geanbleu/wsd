@@ -21,24 +21,24 @@ var schemaSQL string
 
 // States
 const (
-	StateCreating  = "creating"
-	StateRunning   = "running"
+	StateCreating   = "creating"
+	StateRunning    = "running"
 	StateSuspending = "suspending"
-	StateSuspended = "suspended"
-	StateResuming  = "resuming"
-	StateError     = "error"
-	StateDeleting  = "deleting"
-	StateDeleted   = "deleted"
+	StateSuspended  = "suspended"
+	StateResuming   = "resuming"
+	StateError      = "error"
+	StateDeleting   = "deleting"
+	StateDeleted    = "deleted"
 )
 
 var validTransitions = map[string][]string{
-	StateCreating:  {StateRunning, StateError, StateDeleting},
-	StateRunning:   {StateSuspending, StateError, StateDeleting},
+	StateCreating:   {StateRunning, StateError, StateDeleting},
+	StateRunning:    {StateSuspending, StateError, StateDeleting},
 	StateSuspending: {StateSuspended, StateError},
-	StateSuspended: {StateResuming, StateDeleting},
-	StateResuming:  {StateRunning, StateError},
-	StateError:     {StateDeleting},
-	StateDeleting:  {StateDeleted},
+	StateSuspended:  {StateResuming, StateDeleting},
+	StateResuming:   {StateRunning, StateError},
+	StateError:      {StateDeleting},
+	StateDeleting:   {StateDeleted},
 }
 
 func validTransition(from, to string) bool {
@@ -73,9 +73,9 @@ type IPAllocation struct {
 
 // Store is the wsd database.
 type Store struct {
-	db    *sql.DB
-	wsMu  sync.Map // map[workspace-id]*sync.Mutex
-	ipMu  sync.Mutex
+	db   *sql.DB
+	wsMu sync.Map // map[workspace-id]*sync.Mutex
+	ipMu sync.Mutex
 }
 
 // Open opens or creates the SQLite database at path.

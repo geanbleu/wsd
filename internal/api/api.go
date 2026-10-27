@@ -44,7 +44,7 @@ type resumeCall struct {
 // Handler implements all /v1/* routes.
 type Handler struct {
 	Deps
-	resumeIn  sync.Map // map[ws_id]*resumeCall — coalesces concurrent resume requests
+	resumeIn   sync.Map // map[ws_id]*resumeCall — coalesces concurrent resume requests
 	latCreate  *latHist
 	latResume  *latHist
 	latSuspend *latHist
@@ -1278,18 +1278,18 @@ func readSmapsField(pid int, field string) (int64, error) {
 	return 0, fmt.Errorf("champ %s introuvable", field)
 }
 
-func readRSSKiB(pid int) (int64, error)  { return readSmapsField(pid, "Rss") }
-func readPSSKiB(pid int) (int64, error)  { return readSmapsField(pid, "Pss") }
+func readRSSKiB(pid int) (int64, error) { return readSmapsField(pid, "Rss") }
+func readPSSKiB(pid int) (int64, error) { return readSmapsField(pid, "Pss") }
 
 // ── latency histogram ─────────────────────────────────────────────────────────
 
 type latHist struct {
-	mu      sync.Mutex
-	bounds  []float64
-	counts  []int64 // cumulative per bucket
-	inf     int64
-	sum     float64
-	n       int64
+	mu     sync.Mutex
+	bounds []float64
+	counts []int64 // cumulative per bucket
+	inf    int64
+	sum    float64
+	n      int64
 }
 
 func newLatHist(bounds []float64) *latHist {

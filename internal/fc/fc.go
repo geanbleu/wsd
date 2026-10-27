@@ -72,10 +72,10 @@ type VMState struct {
 
 // SnapshotCreateParams corresponds to SnapshotCreateParams in the swagger.
 type SnapshotCreateParams struct {
-	SnapshotPath     string `json:"snapshot_path"`
-	MemFilePath      string `json:"mem_file_path"`
-	SnapshotType     string `json:"snapshot_type,omitempty"`      // "Full" (default) or "Diff"
-	SyncSnapshotFiles *bool `json:"sync_snapshot_files,omitempty"` // default true
+	SnapshotPath      string `json:"snapshot_path"`
+	MemFilePath       string `json:"mem_file_path"`
+	SnapshotType      string `json:"snapshot_type,omitempty"`       // "Full" (default) or "Diff"
+	SyncSnapshotFiles *bool  `json:"sync_snapshot_files,omitempty"` // default true
 }
 
 // MemoryBackend corresponds to MemoryBackend in the swagger.
@@ -103,18 +103,18 @@ type Balloon struct {
 
 // BalloonStats corresponds to BalloonStatistics in the swagger (GET /balloon/statistics).
 type BalloonStats struct {
-	TargetPages      int   `json:"target_pages,omitempty"`
-	ActualPages      int   `json:"actual_pages,omitempty"`
-	TargetMiB        int   `json:"target_mib,omitempty"`
-	ActualMiB        int   `json:"actual_mib,omitempty"`
-	FreeMemory       int64 `json:"free_memory,omitempty"`
-	AvailableMemory  int64 `json:"available_memory,omitempty"`
-	TotalMemory      int64 `json:"total_memory,omitempty"`
-	SwapIn           int64 `json:"swap_in,omitempty"`
-	SwapOut          int64 `json:"swap_out,omitempty"`
-	MajorFaults      int64 `json:"major_faults,omitempty"`
-	MinorFaults      int64 `json:"minor_faults,omitempty"`
-	DiskCaches       int64 `json:"disk_caches,omitempty"`
+	TargetPages     int   `json:"target_pages,omitempty"`
+	ActualPages     int   `json:"actual_pages,omitempty"`
+	TargetMiB       int   `json:"target_mib,omitempty"`
+	ActualMiB       int   `json:"actual_mib,omitempty"`
+	FreeMemory      int64 `json:"free_memory,omitempty"`
+	AvailableMemory int64 `json:"available_memory,omitempty"`
+	TotalMemory     int64 `json:"total_memory,omitempty"`
+	SwapIn          int64 `json:"swap_in,omitempty"`
+	SwapOut         int64 `json:"swap_out,omitempty"`
+	MajorFaults     int64 `json:"major_faults,omitempty"`
+	MinorFaults     int64 `json:"minor_faults,omitempty"`
+	DiskCaches      int64 `json:"disk_caches,omitempty"`
 }
 
 // ── low-level helpers ─────────────────────────────────────────────────────────
